@@ -22,7 +22,6 @@ static bool isATuneAttr(AttributedStmt *AttributedStmt) {
 }
 
 bool FindAttrStmtsVisitor::VisitAttributedStmt(AttributedStmt *attributedStmt) {
-  std::cout << "finally here god!\n";
   auto attrs = attributedStmt->getAttrs();
   for (auto attr : attrs) {
     if (std::strcmp(attr->getSpelling(), "block_dim") == 0) {
@@ -116,6 +115,11 @@ public:
     return nullptr;
   }
   mlir::Value VisitDeclRefExpr(DeclRefExpr *declRef) {
+    auto qualType = declRef->getType();
+    auto type = qualType.getTypePtr();
+    if (type->isArrayType()) {
+
+    }
     declRef->dump();
     return nullptr;
   }
