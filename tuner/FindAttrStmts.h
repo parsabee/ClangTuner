@@ -25,7 +25,7 @@ namespace tuner {
 
 class FindAttrStmtsVisitor : public RecursiveASTVisitor<FindAttrStmtsVisitor> {
   bool isInTuneAttr = false;
-  mlir::ModuleOp theModule = nullptr;
+  mlir::ModuleOp theModule;
   mlir::OpBuilder opBuilder;
   ASTContext &astContext;
 
@@ -33,8 +33,6 @@ public:
   FindAttrStmtsVisitor(mlir::MLIRContext &context, ASTContext &astContext)
       : opBuilder(&context), astContext(astContext) {}
   bool VisitAttributedStmt(AttributedStmt *attributedStmt);
-  bool TraverseAttributedStmt(AttributedStmt *attributedStmt);
-  bool VisitForStmt(ForStmt *forStmt);
 };
 
 class FindAttrStmtsConsumer : public ASTConsumer {

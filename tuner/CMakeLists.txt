@@ -63,6 +63,9 @@ add_clang_tune_target(clang-tune
         FindTuneAttr.cpp
         FindAttrStmts.h
         FindAttrStmts.cpp
+        FunctionCreator.cpp
+        CodeGen.cpp
+        TypeGen.cpp
         mlir/Dialect.cpp
         mlir/MLIRGen.cpp
 
