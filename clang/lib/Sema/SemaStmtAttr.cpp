@@ -384,6 +384,34 @@ static Attr *handleOpenCLUnrollHint(Sema &S, Stmt *St, const ParsedAttr &A,
   return ::new (S.Context) OpenCLUnrollHintAttr(S.Context, A, UnrollFactor);
 }
 
+/// Added by Parsa Bagheri April 22, 2021
+/// adds a TuneBlockDim attribute to the ast
+static Attr *handleTuneBlockDim(Sema &S, Stmt *St, const ParsedAttr &A,
+                            SourceRange Range) {
+  if (A.getNumArgs() == 0) {
+    S.Diag(A.getLoc(), diag::err_attribute_argument_type)
+        << A << AANT_ArgumentIntegerConstant;
+    return nullptr;
+  }
+
+  std::vector<unsigned> DiagnosticIdentifiers;
+  for (unsigned i = 0, end = A.getNumArgs(); i != end; ++i) {
+    Expr *E = A.getArgAsExpr(i);
+    Optional<llvm::APSInt> ArgVal;
+
+    if (!(ArgVal = E->getIntegerConstantExpr(S.Context))) {
+      S.Diag(A.getLoc(), diag::err_attribute_argument_type)
+          << A << AANT_ArgumentIntegerConstant << E->getSourceRange();
+      return nullptr;
+    }
+    DiagnosticIdentifiers.push_back(
+        static_cast<unsigned>(ArgVal->getExtValue()));
+  }
+
+  return ::new (S.Context) TuneBlockDimAttr(S.Context, A,
+              DiagnosticIdentifiers.data(), DiagnosticIdentifiers.size());
+}
+
 static Attr *ProcessStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &A,
                                   SourceRange Range) {
   if (A.isInvalid() || A.getKind() == ParsedAttr::IgnoredAttribute)
@@ -414,6 +442,8 @@ static Attr *ProcessStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &A,
     return handleLoopHintAttr(S, St, A, Range);
   case ParsedAttr::AT_OpenCLUnrollHint:
     return handleOpenCLUnrollHint(S, St, A, Range);
+  case ParsedAttr::AT_TuneBlockDim:
+    return handleTuneBlockDim(S, St, A, Range);
   case ParsedAttr::AT_Suppress:
     return handleSuppressAttr(S, St, A, Range);
   case ParsedAttr::AT_NoMerge:

@@ -8,8 +8,15 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/BuiltinAttributes.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Verifier.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
+#include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/Passes.h"
+#include "mlir/Conversion/SCFToStandard/SCFToStandard.h"
+#include "mlir/Conversion/StandardToLLVM/ConvertStandardToLLVMPass.h"
 
 namespace clang::tuner {
 
@@ -17,6 +24,26 @@ namespace clang::tuner {
 using LoopInputArgs = std::map<llvm::StringRef, const Expr *>;
 
 #define UNKNOWN_LOC opBuilder.getUnknownLoc()
+
+static StringRef getArrayName(ArraySubscriptExpr *arraySubscriptExpr) {
+  auto *base = arraySubscriptExpr->getBase();
+  while (auto *arr = dyn_cast<ArraySubscriptExpr>(base)) {
+    base = arr->getLHS();
+  }
+  if (auto *cast = dyn_cast<ImplicitCastExpr>(base)) {
+    if (auto *decl = dyn_cast<DeclRefExpr>(cast->getSubExpr())) {
+      return decl->getNameInfo().getAsString();
+    }
+  }
+  return "";
+}
+
+mlir::LogicalResult CodeGen::declare(llvm::StringRef var, mlir::Value value) {
+  if (scopedHashTable.count(var))
+    return mlir::failure();
+  scopedHashTable.insert(var, value);
+  return mlir::success();
+}
 
 using namespace ast_matchers;
 class MatchDeclRefExpr : public MatchFinder::MatchCallback {
@@ -47,6 +74,38 @@ static void findLoopInputs(ForStmt *forStmt, ASTContext &context,
   matcher.matchAST(context);
 }
 
+mlir::Value CodeGen::createConstantIndex(unsigned int index) {
+  auto retval = constants.lookup(index);
+  if (retval != nullptr)
+    return retval;
+  auto val = opBuilder.create<mlir::ConstantIndexOp>(UNKNOWN_LOC, index);
+  constants.insert(index, val);
+  return val;
+}
+
+mlir::Value CodeGen::handleVarDecl(VarDecl *varDecl) {
+  auto type = typeGen.getType(varDecl);
+  assert(type && "type must be valid at this point");
+  auto alloca = opBuilder.create<mlir::memref::AllocaOp>(UNKNOWN_LOC, type);
+  if (varDecl->hasInit()) {
+    auto val = Visit(varDecl->getInit());
+    /// Fixme this only covers ints
+    opBuilder.create<mlir::memref::StoreOp>(UNKNOWN_LOC, val, alloca,
+                                            createConstantIndex(0));
+  }
+  scopedHashTable.insert(varDecl->getName(), alloca);
+}
+
+mlir::Value CodeGen::VisitDeclStmt(DeclStmt *declStmt) {
+  for (auto decl : declStmt->decls()) {
+    if (auto varDecl = dyn_cast<VarDecl>(decl)) {
+      handleVarDecl(varDecl);
+    } else
+      assert(false && "only var decl is supported at the momemnt");
+  }
+  return nullptr; // nothing to return
+}
+
 /// forloop inits
 using ForLoopInitDecl =
     std::pair<std::pair<const QualType, llvm::StringRef>, Expr *>;
@@ -63,32 +122,16 @@ static void handleLoopDecls(const VarDecl *loopDecl,
   initDecls.push_back({{type, varName}, init});
 }
 
-mlir::Value CodeGen::VisitDeclStmt(DeclStmt *declStmt) {
-  for (auto decl : declStmt->decls()) {
-    if (auto varDecl = dyn_cast<VarDecl>(decl)) {
-      auto type = typeGen.getType(varDecl);
-      assert(type && "type must be valid at this point");
-      auto alloca = opBuilder.create<mlir::memref::AllocaOp>(UNKNOWN_LOC, type);
-      if (varDecl->hasInit()) {
-        auto val = Visit(varDecl->getInit());
-        /// Fixme this only covers ints
-        auto store = opBuilder.create<mlir::memref::StoreOp>(UNKNOWN_LOC, val, alloca);
-      }
-      scopedHashTable.insert(varDecl->getName(), alloca);
-    } else
-      assert(false && "only var decl is supported at the momemnt");
-  }
-  return nullptr; // nothing to return
-}
-
 mlir::Value CodeGen::VisitForStmt(ForStmt *forStmt) {
   llvm::ScopedHashTableScope<llvm::StringRef, mlir::Value> forScope(
       scopedHashTable);
+
+  llvm::ScopedHashTableScope<int, mlir::Value> constScope(constants);
+
   const auto forLoopInitStmt = forStmt->getInit();
   const auto forLoopInitDeclStmt = dyn_cast<DeclStmt>(forLoopInitStmt);
 
   assert(forLoopInitDeclStmt && "init stmt is not a decl stmt");
-  Visit(forLoopInitDeclStmt);
 
   ForLoopInitDecls initDecls;
   assert(forLoopInitDeclStmt->isSingleDecl() && "loop must have a single decl");
@@ -104,8 +147,7 @@ mlir::Value CodeGen::VisitForStmt(ForStmt *forStmt) {
   const auto cond = forStmt->getCond();
   assert(cond && "for loop doesn't have a conditional stmt");
 
-  Expr *upperBound = nullptr;
-  Expr *condLHS = nullptr;
+  Expr *upperBound = nullptr, *condLHS = nullptr;
   if (auto *const binOp = dyn_cast<BinaryOperator>(cond)) {
     if (binOp->getOpcode() == BinaryOperator::Opcode::BO_LT ||
         binOp->getOpcode() == BinaryOperator::Opcode::BO_LE) {
@@ -154,18 +196,6 @@ mlir::Value CodeGen::VisitForStmt(ForStmt *forStmt) {
   }
   assert(isIncrementByOne && "The loop variable needs to increment by one");
 
-  /// this lambda will be passed to the ForLoopOp to build the body of forloop
-  auto forLoopBodyBuilder = [&forStmt, this](mlir::OpBuilder &, mlir::Location,
-                                             mlir::Value, mlir::ValueRange) {
-    const auto body = forStmt->getBody();
-    if (const auto compStmt = dyn_cast<CompoundStmt>(body)) {
-      for (const auto it : compStmt->body()) {
-        auto res = this->Visit(it);
-      }
-    } else
-      auto res = this->Visit(body);
-  };
-
   Expr::EvalResult lowerBoundResult, upperBoundResult;
   if (lowerBound->EvaluateAsConstantExpr(lowerBoundResult, astContext)) {
     uint64_t lb, ub;
@@ -173,20 +203,40 @@ mlir::Value CodeGen::VisitForStmt(ForStmt *forStmt) {
       lb = lowerBoundResult.Val.getInt().getExtValue();
     if (upperBound->EvaluateAsConstantExpr(upperBoundResult, astContext)) {
       if (upperBoundResult.Val.isInt()) {
+
+        /// generating the upper/lower bounds and step
         ub = upperBoundResult.Val.getInt().getExtValue();
         auto mlirUB = opBuilder.create<mlir::ConstantIndexOp>(UNKNOWN_LOC, ub);
         auto mlirLB = opBuilder.create<mlir::ConstantIndexOp>(UNKNOWN_LOC, lb);
         auto step = opBuilder.create<mlir::ConstantIndexOp>(UNKNOWN_LOC, 1);
-        auto forLoopOp = opBuilder.create<mlir::scf::ForOp>(
-            UNKNOWN_LOC, mlirLB, mlirUB, step, llvm::None, forLoopBodyBuilder);
 
-        //        LoopInputArgs loopInputArgs;
-        //        findLoopInputs(forStmt, astContext, loopInputArgs);
-//        return forLoopOp;
-//        moduleOp->dump();
+        /// generating the forloop and saving its induction variable
+        auto forLoopOp = opBuilder.create<mlir::scf::ForOp>(
+            UNKNOWN_LOC, mlirLB, mlirUB, step, llvm::None);
+        //        forLoopBodyBuilder();
+        auto inductionVar = forLoopOp.getInductionVar();
+        auto didDeclare = declare(varDecl->getName(), inductionVar);
+        assert(mlir::succeeded(didDeclare) &&
+               "induction variable must not be present in the hash table");
+
+        /// generating the body of the for loop
+        auto &forLoopRegion = forLoopOp.getLoopBody();
+        auto &forLoopBlock = forLoopRegion.back();
+        opBuilder.setInsertionPointToStart(&forLoopBlock);
+
+        const auto body = forStmt->getBody();
+        if (const auto compStmt = dyn_cast<CompoundStmt>(body)) {
+          for (const auto it : compStmt->body()) {
+            this->Visit(it);
+          }
+        } else
+          this->Visit(body);
+
+//        assert(mlir::succeeded(mlir::verify(forLoopOp)) && "invalid forloop");
       }
     }
   }
+  return nullptr;
 }
 
 mlir::Value CodeGen::VisitImplicitCastExpr(ImplicitCastExpr *implicitCastExpr) {
@@ -195,30 +245,130 @@ mlir::Value CodeGen::VisitImplicitCastExpr(ImplicitCastExpr *implicitCastExpr) {
 
 mlir::Value
 CodeGen::VisitArraySubscriptExpr(ArraySubscriptExpr *arraySubscriptExpr) {
-  const auto indexValue = Visit(arraySubscriptExpr->getRHS());
-  auto mlirType = typeGen.Visit(arraySubscriptExpr);
-  //  auto load =
-  //  opBuilder.create<mlir::memref::LoadOp>(UNKNOWN_LOC, )
+  const auto idx = Visit(arraySubscriptExpr->getIdx());
+  auto name = getArrayName(arraySubscriptExpr);
+  mlir::Value SSAVal = scopedHashTable.lookup(name);
+  assert(SSAVal && "array must be present in the hash table");
+  return opBuilder.create<mlir::memref::LoadOp>(UNKNOWN_LOC, SSAVal, idx);
+}
+
+template <typename F1, typename F2>
+static mlir::Value genericBinOpHandler(
+    mlir::Value &lhs, mlir::Value &rhs, F1 &&ifInt,
+    F2 &&ifFloat) { // pass by rvalue to restrict F1 and F2 to closures
+  auto lhsT = lhs.getType();
+  auto rhsT = rhs.getType();
+  if ((lhsT.isSignedInteger() || lhsT.isUnsignedInteger()) &&
+      (rhsT.isSignedInteger() || rhsT.isUnsignedInteger())) {
+    return ifInt();
+  } else {
+    return ifFloat();
+  }
+}
+
+mlir::Value CodeGen::handleAssignment(mlir::Value &lhs, mlir::Value &rhs) {
+  opBuilder.create<mlir::memref::StoreOp>(UNKNOWN_LOC, lhs, rhs);
   return nullptr;
 }
 
-mlir::Value CodeGen::VisitBinaryOperator(BinaryOperator *binOp) {
-  auto lhsRes = Visit(binOp->getLHS());
-  auto rhsRes = Visit(binOp->getRHS());
+mlir::Value CodeGen::handleAssignment(Expr *lhs, Expr *rhs) {
+  auto rhsVal = Visit(rhs);
+  if (auto *arraySubscript = dyn_cast<ArraySubscriptExpr>(lhs)) {
+    const auto idx = Visit(arraySubscript->getIdx());
+    auto name = getArrayName(arraySubscript);
+    mlir::Value SSAVal = scopedHashTable.lookup(name);
+    assert(SSAVal);
+    opBuilder.create<mlir::memref::StoreOp>(UNKNOWN_LOC, rhsVal, SSAVal, idx);
+  }
   return nullptr;
+}
+
+mlir::Value CodeGen::handleSubtraction(mlir::Value &lhs, mlir::Value &rhs) {
+  return genericBinOpHandler(
+      lhs, rhs,
+      [this, &lhs, &rhs]() -> mlir::Value {
+        return opBuilder.create<mlir::SubIOp>(UNKNOWN_LOC, lhs.getType(), lhs,
+                                              rhs);
+      },
+      [this, &lhs, &rhs]() -> mlir::Value {
+        return opBuilder.create<mlir::SubFOp>(UNKNOWN_LOC, lhs.getType(), lhs,
+                                              rhs);
+      });
+}
+mlir::Value CodeGen::handleMultiplication(mlir::Value &lhs, mlir::Value &rhs) {
+  return genericBinOpHandler(
+      lhs, rhs,
+      [this, &lhs, &rhs]() -> mlir::Value {
+        return opBuilder.create<mlir::MulFOp>(UNKNOWN_LOC, lhs.getType(), lhs,
+                                              rhs);
+      },
+      [this, &lhs, &rhs]() -> mlir::Value {
+        return opBuilder.create<mlir::MulIOp>(UNKNOWN_LOC, lhs.getType(), lhs,
+                                              rhs);
+      });
+}
+mlir::Value CodeGen::handleDivision(mlir::Value &lhs, mlir::Value &rhs) {
+  return genericBinOpHandler(
+      lhs, rhs,
+      [this, &lhs, &rhs]() -> mlir::Value {
+        return opBuilder.create<mlir::DivFOp>(UNKNOWN_LOC, lhs.getType(), lhs,
+                                              rhs);
+      },
+      [this, &lhs, &rhs]() -> mlir::Value {
+        return opBuilder.create<mlir::DivFOp>(UNKNOWN_LOC, lhs.getType(), lhs,
+                                              rhs);
+      });
+}
+mlir::Value CodeGen::handleAddition(mlir::Value &lhs, mlir::Value &rhs) {
+
+  return genericBinOpHandler(
+      lhs, rhs,
+      [this, &lhs, &rhs]() -> mlir::Value {
+        return opBuilder.create<mlir::AddIOp>(UNKNOWN_LOC, lhs.getType(), lhs,
+                                              rhs);
+      },
+      [this, &lhs, &rhs]() -> mlir::Value {
+        return opBuilder.create<mlir::AddIOp>(UNKNOWN_LOC, lhs.getType(), lhs,
+                                              rhs);
+      });
+}
+
+mlir::Value CodeGen::VisitBinaryOperator(BinaryOperator *binOp) {
+  if (binOp->isAssignmentOp()) {
+    handleAssignment(binOp->getLHS(), binOp->getRHS());
+    return nullptr;
+  }
+
+  auto lhs = Visit(binOp->getLHS());
+  auto rhs = Visit(binOp->getRHS());
+  assert(lhs != nullptr && rhs != nullptr);
+  switch (binOp->getOpcode()) {
+  case BO_Add:
+    return handleAddition(lhs, rhs);
+  case BO_Mul:
+    return handleMultiplication(lhs, rhs);
+  case BO_Div:
+    return handleDivision(lhs, rhs);
+  case BO_Sub:
+    return handleSubtraction(lhs, rhs);
+  default:
+    return nullptr;
+  }
 }
 
 mlir::Value CodeGen::VisitDeclRefExpr(DeclRefExpr *declRef) {
   auto declName = declRef->getDecl()->getName();
-  auto allocaVal = scopedHashTable.lookup(declName);
+  auto val = scopedHashTable.lookup(declName);
   assert(
-      allocaVal &&
+      val &&
       "declRefExpr should be in the symbol table at this point, but it's not");
-  auto memrefType = typeGen.VisitDeclRefExpr(declRef);
-  //  auto memref = opBuilder.create<mlir::>
-  auto loadVal = opBuilder.create<mlir::memref::LoadOp>(
-      UNKNOWN_LOC, allocaVal.getType(), allocaVal);
-  return loadVal;
+  return val;
+  //  mlir::MemRefType memrefType = typeGen.VisitDeclRefExpr(declRef);
+  //  //  auto memref = opBuilder.create<mlir::>
+  //  auto loadVal =
+  //      opBuilder.create<mlir::memref::LoadOp>(UNKNOWN_LOC, memrefType,
+  //      createConstantIndex(0));
+  //  return loadVal;
 }
 
 mlir::Value CodeGen::VisitIntegerLiteral(IntegerLiteral *integerLiteral) {
@@ -229,18 +379,29 @@ mlir::Value CodeGen::VisitIntegerLiteral(IntegerLiteral *integerLiteral) {
                                             mlir::IntegerAttr::get(type, val));
 }
 
-// using NamedAttrs = llvm::SmallVector<mlir::NamedAttribute>;
-// static void generateFunctionAttributes(NamedAttrs& namedAttrs, utils::Decls
-// &decls, mlir::MLIRContext *mlirContext) {
-//  for (auto &pair : decls) {
-//    namedAttrs.push_back({mlir::Identifier::get(pair.first, mlirContext),})
-//  }
-//}
-mlir::LogicalResult CodeGen::declare(llvm::StringRef var, mlir::Value value) {
-  if (scopedHashTable.count(var))
-    return mlir::failure();
-  scopedHashTable.insert(var, value);
-  return mlir::success();
+bool ForLoopArgs::append(mlir::Type type, StringRef name) {
+  if (nameArgMap.find(name) == nameArgMap.end()) {
+    nameArgMap[name] = nameArgMap.size();
+    argTypes.push_back(type);
+    argNames.push_back(name);
+    return true;
+  }
+  return false;
+}
+
+const mlir::Type ForLoopArgs::lookUp(StringRef name) const {
+  if (nameArgMap.find(name) != nameArgMap.end()) {
+    return argTypes[nameArgMap.lookup(name)];
+  }
+  return nullptr;
+}
+
+const SmallVector<mlir::Type> &ForLoopArgs::getArgTypes() const {
+  return argTypes;
+}
+
+const SmallVector<StringRef> &ForLoopArgs::getArgNames() const {
+  return argNames;
 }
 
 void CodeGen::run() {
@@ -252,36 +413,40 @@ void CodeGen::run() {
 
   /// creating the function
 
-  SmallVector<mlir::Type> args;
-  SmallVector<StringRef> argNames;
   for (auto pair : loopInputs) {
-    args.push_back(typeGen.getType(pair.second));
-    argNames.push_back(pair.first);
+    loopArgs.append(typeGen.getType(pair.second), pair.first);
   }
-  auto funcType = opBuilder.getFunctionType(args, llvm::None);
-
+  auto funcType = opBuilder.getFunctionType(loopArgs.getArgTypes(), llvm::None);
   llvm::ScopedHashTableScope<StringRef, mlir::Value> scope(scopedHashTable);
+  llvm::ScopedHashTableScope<int, mlir::Value> constScope(constants);
 
   /// TODO find a better name (mangled) for the function
   auto funcOp =
       opBuilder.create<mlir::FuncOp>(UNKNOWN_LOC, "the_for_loop", funcType);
-
   auto &entryBlock = *funcOp.addEntryBlock();
-//  auto &region = funcOp.region();
-
-  for (const auto p : llvm::zip(argNames, entryBlock.getArguments())) {
-    if (mlir::failed(declare(std::get<0>(p), std::get<1>(p)))) {
-      assert(false && "shouldn't have failed");
-      return;
-    }
+  for (auto it : llvm::zip(loopArgs.getArgNames(), entryBlock.getArguments())) {
+    auto val = declare(std::get<0>(it), std::get<1>(it));
+    assert(mlir::succeeded(val));
   }
-
   opBuilder.setInsertionPointToEnd(&entryBlock);
 
   auto forOp = Visit(forS);
 
   moduleOp.push_back(funcOp);
+  opBuilder.setInsertionPointToEnd(&entryBlock);
+  opBuilder.create<mlir::ReturnOp>(UNKNOWN_LOC);
+  if (mlir::failed(mlir::verify(moduleOp))) {
+    moduleOp.emitError("module verification error");
+  }
+
+  mlir::PassManager pm(mlirContext);
+  pm.addPass(mlir::createLowerToCFGPass());
+  pm.addPass(mlir::createLowerToLLVMPass());
+  if (mlir::failed(pm.run(moduleOp)))
+    moduleOp->emitError("failed to lower module");
+
   moduleOp.dump();
+
 }
 
 } // namespace clang::tuner

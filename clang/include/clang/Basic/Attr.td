@@ -3778,3 +3778,12 @@ def EnforceTCBLeaf : InheritableAttr {
   let Documentation = [EnforceTCBLeafDocs];
   bit InheritEvenIfAlreadyPresent = 1;
 }
+
+/// Gpu Tuning attribute
+def TuneBlockDim : StmtAttr {
+  let Spellings = [Clang<"block_dim">];
+  let Subjects = SubjectList<[ForStmt],
+                             WarnDiag, "'for' statements">;
+  let Args = [VariadicUnsignedArgument<"BlockDim">];
+  let Documentation = [TuneBlockDimDocs];
+}

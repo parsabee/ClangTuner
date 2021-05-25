@@ -5927,3 +5927,10 @@ def EnforceTCBLeafDocs : Documentation {
   - ``enforce_tcb_leaf(Name)`` indicates that this function is a part of the TCB named ``Name``
   }];
 }
+
+def TuneBlockDimDocs : Documentation {
+  let Category = DocCatStmt;
+  let Content = [{
+  The ``cuda_tune`` attribute generates cuda code for it's following ``ForStmt``
+  }];
+}

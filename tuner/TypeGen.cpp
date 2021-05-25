@@ -6,7 +6,7 @@
 namespace clang::tuner {
 
 static mlir::Type getBuiltinType(const Type *type,
-                                  mlir::MLIRContext *mlirContext) {
+                                 mlir::MLIRContext *mlirContext) {
   if (type->isFloatingType()) {
     return mlir::Float32Type::get(mlirContext);
   } else if (type->isIntegerType()) {
@@ -21,28 +21,44 @@ static mlir::Type getBuiltinType(const Type *type,
 
 static void findArrayShape(mlir::MLIRContext *mlirContext, QualType *qualType,
                            SmallVector<int64_t> &shape, mlir::Type &t) {
-  auto type = qualType->getTypePtr();
-  if (auto array = dyn_cast<ArrayType>(type)) {
-    if (auto constantArray = dyn_cast<ConstantArrayType>(type)) {
-      const llvm::APInt &apInt = constantArray->getSize();
-      uint64_t size = *(constantArray->getSize().getRawData());
-      shape.push_back(static_cast<int64_t>(size));
+  std::function<void(mlir::MLIRContext *, QualType *, SmallVector<int64_t> &,
+                     mlir::Type &)>
+      findShapeRecursively;
+  findShapeRecursively = [&findShapeRecursively](
+                             mlir::MLIRContext *mlirContext, QualType *qualType,
+                             SmallVector<int64_t> &shape, mlir::Type &t) {
+    auto type = qualType->getTypePtr();
+    if (auto array = dyn_cast<ArrayType>(type)) {
+      if (auto constantArray = dyn_cast<ConstantArrayType>(type)) {
+        const llvm::APInt &apInt = constantArray->getSize();
+        uint64_t size = *(constantArray->getSize().getRawData());
+        shape.push_back(static_cast<int64_t>(size));
+      } else {
+        shape.push_back(-1);
+      }
+      auto elementType = array->getElementType();
+      findShapeRecursively(mlirContext, &elementType, shape, t);
     } else {
-      shape.push_back(-1);
+      t = getBuiltinType(type, mlirContext);
     }
-    auto elementType = array->getElementType();
-    findArrayShape(mlirContext, &elementType, shape, t);
+  };
+
+  auto type = qualType->getTypePtr();
+  if (isa<ArrayType>(type)) {
+    findShapeRecursively(mlirContext, qualType, shape, t);
   } else {
+    shape.push_back(1);
     t = getBuiltinType(type, mlirContext);
   }
 }
 
-static mlir::MemRefType createMemref(mlir::MLIRContext *mlirContext, QualType *qualType) {
+static mlir::MemRefType createMemref(mlir::MLIRContext *mlirContext,
+                                     QualType *qualType) {
   SmallVector<int64_t> shape;
   mlir::MemRefType type;
   findArrayShape(mlirContext, qualType, shape, type);
-  if (shape.empty())
-    return type;
+  //  if (shape.empty())
+  //    return type;
   return mlir::MemRefType::get(shape, type);
 }
 
@@ -70,7 +86,7 @@ mlir::MemRefType TypeGen::getType(VarDecl *varDecl) {
 }
 
 mlir::MemRefType TypeGen::getType(Decl *decl) {
-  switch(decl->getKind()) {
+  switch (decl->getKind()) {
   case Decl::Var:
     return getType(dyn_cast<VarDecl>(decl));
   default:
@@ -79,8 +95,9 @@ mlir::MemRefType TypeGen::getType(Decl *decl) {
   }
 }
 
-mlir::Type TypeGen::VisitArraySubscriptExpr(ArraySubscriptExpr *arraySubscript) {
-  return Visit(arraySubscript->getLHS());
+mlir::Type
+TypeGen::VisitArraySubscriptExpr(ArraySubscriptExpr *arraySubscript) {
+  return Visit(arraySubscript->getBase());
 }
 
 mlir::Type TypeGen::VisitIntegerLiteral(IntegerLiteral *integerLiteral) {
@@ -88,8 +105,7 @@ mlir::Type TypeGen::VisitIntegerLiteral(IntegerLiteral *integerLiteral) {
 }
 
 mlir::Attribute TypeGen::getAttr(VarDecl *varDecl) {
-//  return mlir::IntegerAttr::get()
+  //  return mlir::IntegerAttr::get()
 }
-
 
 } // namespace clang::tuner
