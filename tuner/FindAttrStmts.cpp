@@ -2,19 +2,24 @@
 // Created by parsa on 4/25/21.
 //
 #include "FindAttrStmts.h"
+#include "clang/Tooling/Refactoring/ASTSelection.h"
 
-#include "CodeGen.h"
 #include "ClangTune/Dialect.h"
+#include "CodeGen.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "clang/AST/ASTDumper.h"
+#include "clang/AST/ASTTypeTraits.h"
 #include "clang/AST/StmtVisitor.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
+#include "clang/Tooling/Refactoring/ASTSelection.h"
+#include "clang/Tooling/Refactoring/Extract/Extract.h"
+#include "clang/Tooling/Refactoring/RefactoringRuleContext.h"
 #include "llvm/IR/DerivedTypes.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
-
 
 namespace clang::tuner {
 
@@ -28,7 +33,8 @@ static bool isATuneAttr(AttributedStmt *AttributedStmt) {
   return false;
 }
 
-#define LOAD_DIALECT(DIALECT) theModule->getContext()->getOrLoadDialect<DIALECT>()
+#define LOAD_DIALECT(DIALECT)                                                  \
+  theModule->getContext()->getOrLoadDialect<DIALECT>()
 
 static mlir::ModuleOp initializeMlirModule(mlir::OpBuilder &opBuilder) {
   auto theModule = mlir::ModuleOp::create(opBuilder.getUnknownLoc());
@@ -41,22 +47,165 @@ static mlir::ModuleOp initializeMlirModule(mlir::OpBuilder &opBuilder) {
   return theModule;
 }
 
+using namespace ast_matchers;
+
+using Declarations = std::map<llvm::StringRef, const DeclRefExpr *>;
+
+class DeclCollector : public clang::RecursiveASTVisitor<DeclCollector> {
+  Declarations &varDecls;
+  Declarations &declRefs;
+
+public:
+  DeclCollector(Declarations &varDecls, Declarations &declRefs)
+      : varDecls(varDecls), declRefs(declRefs) {}
+
+  bool VisitVarDecl(VarDecl *varDecl) {
+    varDecls[varDecl->getName()] = nullptr;
+    return true;
+  }
+
+  bool VisitDeclRefExpr(DeclRefExpr *declRefExpr) {
+    declRefs[declRefExpr->getDecl()->getName()] = declRefExpr;
+    return true;
+  }
+};
+
+/// Finds all declaration references within a for loop to be passed as the loops
+/// arguments
+/// TODO: exclude the decl refs that their declaration is within the loop
+static void findLoopInputs(ForStmt *forStmt, ASTContext &context,
+                           Declarations &inputArgs) {
+  Declarations declRefs, varDecls;
+  DeclCollector declCollector(varDecls, declRefs);
+  declCollector.TraverseForStmt(forStmt);
+
+  for (const auto &it : declRefs) {
+    if (!varDecls.contains(it.first)) {
+      inputArgs[it.first] = it.second;
+    }
+  }
+}
+
+bool FindAttrStmtsVisitor::extractForLoopIntoFunction(
+    AttributedStmt *attributedStmt) {
+
+  // selecting the nodes in the source range of attributedStmt
+  auto sourceRange = attributedStmt->getSourceRange();
+
+  auto selectedNodes =
+      clang::tooling::findSelectedASTNodes(astContext, sourceRange);
+
+  auto codeRange = clang::tooling::CodeRangeASTSelection::create(
+      sourceRange, selectedNodes.getValue());
+
+  if (codeRange.getPointer() == nullptr) {
+    llvm::errs() << "failed to create code range\n";
+    return false;
+  }
+
+  // creating refactoring rule for extracting the for loop within attributedStmt
+  clang::tooling::RefactoringRuleContext RRC(sourceManager);
+  RRC.setASTContext(astContext);
+
+  auto extractFunc = clang::tooling::ExtractFunction::initiate(
+      RRC, std::move(*codeRange.getPointer()), None);
+
+  if (auto err = extractFunc.takeError()) {
+    llvm::logAllUnhandledErrors(std::move(err), llvm::errs());
+    return false;
+  }
+
+  // refactoring
+  Rewriter rewriter(sourceManager, {});
+  //  ExtractFuncConsumer consumer(rewriter);
+  //  extractFunc->invoke(consumer, RRC);
+
+  auto rewriteBuffer =
+      rewriter.getRewriteBufferFor(sourceManager.getMainFileID());
+  llvm::outs() << std::string(rewriteBuffer->begin(), rewriteBuffer->end());
+
+  return true;
+}
+
+static bool isTuneAttr(const char *name) {
+  if (std::strcmp(name, "block_dim") == 0)
+    return true;
+  return false;
+}
+
 bool FindAttrStmtsVisitor::VisitAttributedStmt(AttributedStmt *attributedStmt) {
   auto attrs = attributedStmt->getAttrs();
+  ForStmt *forStmt = nullptr;
+
+  // checking if attr is a tune attr
   for (auto attr : attrs) {
-    if (std::strcmp(attr->getSpelling(), "block_dim") == 0) {
+    if (isTuneAttr(attr->getSpelling())) {
       if (auto blockDim = dyn_cast<TuneBlockDimAttr>(attr)) {
-        for (auto i : blockDim->blockDim()) {
-          std::cout << i << "\n";
+        forStmt = dyn_cast<ForStmt>(attributedStmt->getSubStmt());
+        //        for (auto i : blockDim->blockDim()) {
+        //          std::cout << i << "\n";
+        //        }
+        //      }
+
+        //      if (!extractForLoopIntoFunction(attributedStmt)) {
+        //        return false;
+        //      }
+
+        if (auto forStmt = dyn_cast<ForStmt>(attributedStmt->getSubStmt())) {
+          theModule = initializeMlirModule(opBuilder);
+          CodeGen codeGen(forStmt, astContext, theModule, opBuilder);
+          codeGen.run();
         }
       }
-
-      if (auto forStmt = dyn_cast<ForStmt>(attributedStmt->getSubStmt())) {
-        theModule = initializeMlirModule(opBuilder);
-        CodeGen codeGen(forStmt, astContext, theModule, opBuilder);
-        codeGen.run();
-      }
     }
+  }
+
+  if (forStmt) {
+    rewriter.RemoveText(attributedStmt->getSourceRange());
+
+    Declarations loopInputs;
+    findLoopInputs(forStmt, astContext, loopInputs);
+
+    // TODO find a better name than "forloop"
+    const auto &createFunctionDecl = [&loopInputs]() -> std::string {
+      bool first = true;
+      std::stringstream ss;
+      ss << "extern void forloop(";
+      for (const auto &it : loopInputs) {
+        assert(it.second && "Can't be null");
+        if (!first)
+          ss << ", ";
+        auto declType = it.second->getDecl()->getType();
+        auto declStr = (&declType)->getAsString();
+        ss << declStr;
+        first = false;
+      }
+      ss << ");\n";
+      return ss.str();
+    };
+
+    const auto &createFunctionCall = [&loopInputs]() -> std::string {
+      bool first = true;
+      std::stringstream ss;
+      ss << "forloop(";
+      for (const auto &it : loopInputs) {
+        assert(it.second && "Can't be null");
+        if (!first)
+          ss << ", ";
+        ss << std::string(it.first) << " ";
+        first = false;
+      }
+      ss << ");\n";
+      return ss.str();
+    };
+
+    auto fileID = sourceManager.getFileID(attributedStmt->getBeginLoc());
+
+    rewriter.InsertText(attributedStmt->getBeginLoc(), createFunctionCall());
+
+    // TODO, create the function decl after headers
+    rewriter.InsertText(sourceManager.getLocForStartOfFile(fileID),
+                        createFunctionDecl());
   }
   return true;
 }

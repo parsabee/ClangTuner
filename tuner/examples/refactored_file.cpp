@@ -1,3 +1,4 @@
+extern void forloop(int [256], int [256], int [256]);
 #define N 256
 
 void f() {
@@ -9,10 +10,8 @@ void f() {
     b[i] = 2;
   }
 
-  [[clang::block_dim(32, 64)]]
-  for (int i = 0; i < N; i += 1) {
-    c[i] = a[i] + b[i];
-  }
+  forloop(a , b , c );
+
 }
 
 int main(int argc, char **argv) {

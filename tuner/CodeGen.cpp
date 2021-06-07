@@ -2,26 +2,30 @@
 // Created by parsa on 5/14/21.
 //
 
+#include <fstream>
+
 #include "CodeGen.h"
 #include "ClangTune/Dialect.h"
 #include "FunctionCreator.h"
+#include "mlir/Conversion/SCFToStandard/SCFToStandard.h"
+#include "mlir/Conversion/StandardToLLVM/ConvertStandardToLLVMPass.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Verifier.h"
-#include "clang/ASTMatchers/ASTMatchFinder.h"
-#include "clang/ASTMatchers/ASTMatchers.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Transforms/Passes.h"
-#include "mlir/Conversion/SCFToStandard/SCFToStandard.h"
-#include "mlir/Conversion/StandardToLLVM/ConvertStandardToLLVMPass.h"
+#include "clang/ASTMatchers/ASTMatchFinder.h"
+#include "clang/ASTMatchers/ASTMatchers.h"
+#include <mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h>
 
 namespace clang::tuner {
 
 #define MATCH_DECL_REF "MatchDeclRefs"
-using LoopInputArgs = std::map<llvm::StringRef, const Expr *>;
+using Declarations = std::map<llvm::StringRef, const Expr *>;
 
 #define UNKNOWN_LOC opBuilder.getUnknownLoc()
 
@@ -47,10 +51,10 @@ mlir::LogicalResult CodeGen::declare(llvm::StringRef var, mlir::Value value) {
 
 using namespace ast_matchers;
 class MatchDeclRefExpr : public MatchFinder::MatchCallback {
-  LoopInputArgs &inputArgs;
+  Declarations &inputArgs;
 
 public:
-  explicit MatchDeclRefExpr(LoopInputArgs &inputArgs) : inputArgs(inputArgs) {}
+  explicit MatchDeclRefExpr(Declarations &inputArgs) : inputArgs(inputArgs) {}
 
   void run(const MatchFinder::MatchResult &result) override {
     if (const auto res = result.Nodes.getNodeAs<DeclRefExpr>(MATCH_DECL_REF)) {
@@ -66,7 +70,7 @@ public:
 /// arguments
 /// TODO: exclude the decl refs that their declaration is within the loop
 static void findLoopInputs(ForStmt *forStmt, ASTContext &context,
-                           LoopInputArgs &inputArgs) {
+                           Declarations &inputArgs) {
   MatchDeclRefExpr matchDeclRef(inputArgs);
   MatchFinder matcher;
   auto tmpMatcher = declRefExpr().bind(MATCH_DECL_REF);
@@ -422,7 +426,7 @@ void CodeGen::run() {
 
   /// TODO find a better name (mangled) for the function
   auto funcOp =
-      opBuilder.create<mlir::FuncOp>(UNKNOWN_LOC, "the_for_loop", funcType);
+      opBuilder.create<mlir::FuncOp>(UNKNOWN_LOC, "forloop", funcType);
   auto &entryBlock = *funcOp.addEntryBlock();
   for (auto it : llvm::zip(loopArgs.getArgNames(), entryBlock.getArguments())) {
     auto val = declare(std::get<0>(it), std::get<1>(it));
@@ -446,6 +450,15 @@ void CodeGen::run() {
     moduleOp->emitError("failed to lower module");
 
   moduleOp.dump();
+
+//  mlir::registerLLVMDialectTranslation(*moduleOp->getContext());
+//  auto llvmModule = mlir::translateModuleToLLVMIR(moduleOp, llvmContext);
+//  if (!llvmModule) {
+//    llvm::errs() << "Failed to emit LLVM IR\n";
+//    return;
+//  }
+
+//  llvm::outs() << *llvmModule << "\n";
 
 }
 

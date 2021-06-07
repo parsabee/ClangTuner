@@ -91,6 +91,8 @@ target_link_libraries(
         clangRewriteFrontend
         clangSerialization
         clangTooling
+        clangToolingRefactoring
+        clangCodeGen
 
         MLIRSupport
         MLIRIR
