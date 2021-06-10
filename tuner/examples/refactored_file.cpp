@@ -1,4 +1,12 @@
-extern void forloop(int [256], int [256], int [256]);
+#include <cstdlib>
+#include <cstdio>
+#include <memory>
+extern "C" {
+void forloop(int *, int *, std::size_t, std::size_t , std::size_t,
+             int *, int *, std::size_t, std::size_t , std::size_t,
+             int *, int *, std::size_t, std::size_t , std::size_t);
+}
+
 #define N 256
 
 void f() {
@@ -10,8 +18,18 @@ void f() {
     b[i] = 2;
   }
 
-  forloop(a , b , c );
+  void *ap = a;
+  void *bp = b;
+  void *cp = c;
+  std::size_t sz = N;
+  auto aligna = std::align(alignof(int), sizeof(int), ap, sz);
+  auto alignb = std::align(alignof(int), sizeof(int), bp, sz);
+  auto alignc = std::align(alignof(int), sizeof(int), cp, sz);
+  forloop(a , (int *)aligna, 0, N, 1,
+          b , (int *)alignb, 0, N, 1,
+          c , (int *)alignc, 0, N, 1);
 
+  printf("%d\n", c[0]);
 }
 
 int main(int argc, char **argv) {

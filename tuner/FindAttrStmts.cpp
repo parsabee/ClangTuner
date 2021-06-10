@@ -190,6 +190,11 @@ bool FindAttrStmtsVisitor::VisitAttributedStmt(AttributedStmt *attributedStmt) {
       ss << "forloop(";
       for (const auto &it : loopInputs) {
         assert(it.second && "Can't be null");
+        auto declType = it.second->getDecl()->getType();
+        // if array, it will be expanded to 5 arguments
+        if (declType->isAggregateType()) {
+
+        }
         if (!first)
           ss << ", ";
         ss << std::string(it.first) << " ";
