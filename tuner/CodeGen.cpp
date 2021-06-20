@@ -5,6 +5,8 @@
 #include <fstream>
 
 #include "CodeGen.h"
+#include "ForLoopRefactorer.h"
+
 #include "ClangTune/Dialect.h"
 #include "FunctionCreator.h"
 #include "mlir/Conversion/SCFToStandard/SCFToStandard.h"
@@ -425,8 +427,11 @@ void CodeGen::run() {
   llvm::ScopedHashTableScope<int, mlir::Value> constScope(constants);
 
   /// TODO find a better name (mangled) for the function
+  auto funcName = createFunctionName(const_cast<ForStmt *>(forStmt),
+                                     sourceManager);
+
   auto funcOp =
-      opBuilder.create<mlir::FuncOp>(UNKNOWN_LOC, "forloop", funcType);
+      opBuilder.create<mlir::FuncOp>(UNKNOWN_LOC, funcName, funcType);
   auto &entryBlock = *funcOp.addEntryBlock();
   for (auto it : llvm::zip(loopArgs.getArgNames(), entryBlock.getArguments())) {
     auto val = declare(std::get<0>(it), std::get<1>(it));
@@ -449,16 +454,16 @@ void CodeGen::run() {
   if (mlir::failed(pm.run(moduleOp)))
     moduleOp->emitError("failed to lower module");
 
-  moduleOp.dump();
+//  moduleOp.dump();
 
-//  mlir::registerLLVMDialectTranslation(*moduleOp->getContext());
-//  auto llvmModule = mlir::translateModuleToLLVMIR(moduleOp, llvmContext);
-//  if (!llvmModule) {
-//    llvm::errs() << "Failed to emit LLVM IR\n";
-//    return;
-//  }
+  mlir::registerLLVMDialectTranslation(*moduleOp->getContext());
+  auto llvmModule = mlir::translateModuleToLLVMIR(moduleOp, llvmContext);
+  if (!llvmModule) {
+    llvm::errs() << "Failed to emit LLVM IR\n";
+    return;
+  }
 
-//  llvm::outs() << *llvmModule << "\n";
+  llvm::outs() << *llvmModule << "\n";
 
 }
 

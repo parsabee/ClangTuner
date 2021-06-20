@@ -5,6 +5,8 @@
 #ifndef CLANG_FINDATTRSTMTS_H
 #define CLANG_FINDATTRSTMTS_H
 
+#include "ForLoopRefactorer.h"
+
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/Frontend/CompilerInstance.h"
@@ -30,16 +32,19 @@ namespace tuner {
 class FindAttrStmtsVisitor : public RecursiveASTVisitor<FindAttrStmtsVisitor> {
   bool isInTuneAttr = false;
   mlir::ModuleOp theModule;
+  std::map<std::string, mlir::ModuleOp> modules;
   mlir::OpBuilder opBuilder;
   ASTContext &astContext;
   SourceManager &sourceManager;
-  Rewriter &rewriter;
+  ForLoopRefactorer loopRefactorer;
+  DiagnosticsEngine &diags;
 
 public:
   FindAttrStmtsVisitor(mlir::MLIRContext &context, ASTContext &astContext,
-                       SourceManager &sm, Rewriter &rewriter)
+                       SourceManager &sm, Rewriter &rewriter,
+                       DiagnosticsEngine &diags)
       : opBuilder(&context), astContext(astContext), sourceManager(sm),
-        rewriter(rewriter) {}
+        loopRefactorer(sm, astContext, rewriter), diags(diags) {}
   bool VisitAttributedStmt(AttributedStmt *attributedStmt);
 
 private:
@@ -53,8 +58,9 @@ class FindAttrStmtsConsumer : public ASTConsumer {
 
 public:
   FindAttrStmtsConsumer(mlir::MLIRContext &context, ASTContext &astContext,
-                        SourceManager &sm, Rewriter &rewriter)
-      : Visitor(context, astContext, sm, rewriter) {}
+                        SourceManager &sm, Rewriter &rewriter,
+                        DiagnosticsEngine &diags)
+      : Visitor(context, astContext, sm, rewriter, diags) {}
   virtual void HandleTranslationUnit(ASTContext &Context) {
     Visitor.TraverseDecl(Context.getTranslationUnitDecl());
   }
@@ -63,16 +69,20 @@ public:
 class FindAttrStmts : public ASTFrontendAction {
   mlir::MLIRContext &context;
   Rewriter &rewriter;
+  DiagnosticsEngine &diags;
 
 public:
-  FindAttrStmts(mlir::MLIRContext &context, Rewriter &rewriter)
-      : context(context), rewriter(rewriter) {}
-  virtual std::unique_ptr<ASTConsumer>
-  CreateASTConsumer(CompilerInstance &Compiler, llvm::StringRef InFile) {
+  FindAttrStmts(mlir::MLIRContext &context, Rewriter &rewriter,
+                DiagnosticsEngine &diags)
+      : context(context), rewriter(rewriter), diags(diags) {}
+
+  std::unique_ptr<ASTConsumer>
+  CreateASTConsumer(CompilerInstance &Compiler,
+                    llvm::StringRef InFile) override {
     rewriter.setSourceMgr(Compiler.getSourceManager(), Compiler.getLangOpts());
     return std::make_unique<FindAttrStmtsConsumer>(
         context, Compiler.getASTContext(), Compiler.getSourceManager(),
-        rewriter);
+        rewriter, diags);
   }
 };
 

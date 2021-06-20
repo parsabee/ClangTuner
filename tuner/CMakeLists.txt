@@ -2,19 +2,19 @@ cmake_minimum_required(VERSION 3.16)
 project(tuner)
 
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_FLAGS "-std=c++20 -Wall -O0 -fno-rtti ${LLVM_COMPILE_FLAGS}")
+set(CMAKE_CXX_FLAGS "-std=c++2a -Wall -O0 -fno-rtti ${LLVM_COMPILE_FLAGS}")
 
 set(LLVM_LINK_COMPONENTS support)
 set(CMAKE_BUILD_TYPE Debug)
 
-find_package(MLIR REQUIRED CONFIG)
+find_package(MLIR REQUIRED CONFIG NO_DEFAULT_PATH)
 message(STATUS "Using MLIRConfig.cmake in:  ${MLIR_DIR}")
 
-find_package(LLVM REQUIRED CONFIGS)
+find_package(LLVM REQUIRED CONFIGS NO_DEFAULT_PATH)
 message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
 message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
 
-find_package(Clang REQUIRED)
+find_package(Clang REQUIRED NO_DEFAULT_PATH)
 message(STATUS "Found Clang ${CLANG_PACKAGE_VERSION}")
 message(STATUS "Using ClangConfig.cmake in: ${Clang_DIR}")
 message(STATUS "Found CLANG DEFS${CLANG_DEFINITIONS}")
@@ -39,7 +39,13 @@ llvm_map_components_to_libnames(LLVM_LIBS ${LLVM_TARGETS_TO_BUILD})
 set(MLIR_DIR ../mlir)
 include_directories(include/)
 include_directories(${CMAKE_CURRENT_BINARY_DIR}/include/)
-include_directories(${MLIR_DIR}/include/)
+include_directories(${MLIR_INCLUDE_DIRS})
+message(STATUS "including ${MLIR_INCLUDE_DIRS}")
+include_directories(${CLANG_INCLUDE_DIRS})
+message(STATUS "including ${CLANG_INCLUDE_DIRS}")
+include_directories(${LLVM_INCLUDE_DIRS})
+message(STATUS "including ${LLVM_INCLUDE_DIRS}")
+
 
 add_subdirectory(include)
 
@@ -66,6 +72,10 @@ add_clang_tune_target(clang-tune
         FunctionCreator.cpp
         CodeGen.cpp
         TypeGen.cpp
+        TypeCorrector.cpp
+        ForLoopRefactorer.cpp
+        SemaCheck.cpp
+        LoopInputFinder.cpp
         mlir/Dialect.cpp
         mlir/MLIRGen.cpp
 

@@ -25,11 +25,12 @@ void f() {
   auto aligna = std::align(alignof(int), sizeof(int), ap, sz);
   auto alignb = std::align(alignof(int), sizeof(int), bp, sz);
   auto alignc = std::align(alignof(int), sizeof(int), cp, sz);
-  forloop(a , (int *)aligna, 0, N, 1,
-          b , (int *)alignb, 0, N, 1,
-          c , (int *)alignc, 0, N, 1);
-
-  printf("%d\n", c[0]);
+  forloop(a , a, 0, N, 1,
+          b , b, 0, N, 1,
+          c , c, 0, N, 1);
+  printf("%lu\n", sz);
+  for (int i = 0; i < N; i++)
+  printf("%d\n", c[i]);
 }
 
 int main(int argc, char **argv) {

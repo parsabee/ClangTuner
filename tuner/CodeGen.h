@@ -6,6 +6,13 @@
 #define TUNER_CODEGEN_H
 
 #include "TypeGen.h"
+
+#include "../../clang/lib/CodeGen/CodeGenModule.h"
+
+#include "clang/Lex/HeaderSearchOptions.h"
+#include "clang/Lex/PreprocessorOptions.h"
+#include "clang/Basic/CodeGenOptions.h"
+
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -33,6 +40,7 @@ public:
 };
 
 class CodeGen : public StmtVisitor<CodeGen, mlir::Value> {
+  SourceManager &sourceManager;
   llvm::LLVMContext llvmContext;
   llvm::Module llvmModule;
   mlir::MLIRContext *mlirContext;
@@ -41,6 +49,7 @@ class CodeGen : public StmtVisitor<CodeGen, mlir::Value> {
   ASTContext &astContext;
   const ForStmt *forStmt;
   ForLoopArgs loopArgs;
+  ::clang::CodeGen::CodeGenModule CGModule;
 
   // generates the mlir type of expr
   TypeGen typeGen;
@@ -69,12 +78,14 @@ class CodeGen : public StmtVisitor<CodeGen, mlir::Value> {
 
 public:
   CodeGen(ForStmt *forStmt, ASTContext &context, mlir::ModuleOp &moduleOp,
-          mlir::OpBuilder &opBuilder)
-      : llvmContext(), llvmModule("llvm_mod", llvmContext),
+          mlir::OpBuilder &opBuilder, SourceManager &sourceManager,
+          DiagnosticsEngine &diags)
+      : sourceManager(sourceManager), llvmContext(),
+        llvmModule("llvm_mod", llvmContext),
         mlirContext(moduleOp->getContext()), moduleOp(moduleOp),
         opBuilder(opBuilder), astContext(context), forStmt(forStmt),
         typeGen(forStmt, astContext, moduleOp, opBuilder, llvmContext,
-                llvmModule) {}
+                llvmModule), CGModule(context, {}, {}, {}, llvmModule, diags) {}
 
   mlir::Value VisitImplicitCastExpr(ImplicitCastExpr *);
 
