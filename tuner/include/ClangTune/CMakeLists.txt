@@ -1,0 +1,5 @@
+set(LLVM_TARGET_DEFINITIONS ClangTune.td)
+mlir_tablegen(ClangTune.h.inc -gen-op-decls)
+mlir_tablegen(ClangTune.cpp.inc -gen-op-defs)
+mlir_tablegen(Dialect.h.inc -gen-dialect-decls)
+add_public_tablegen_target(ClangTuneIncGen)
