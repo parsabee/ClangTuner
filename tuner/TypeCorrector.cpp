@@ -39,14 +39,6 @@ static void findArrayShape(QualType *qualType, SmallVector<int64_t> &shape) {
   }
 }
 
-static const std::string createFunctionName(ForStmt *forStmt,
-                                            SourceManager &sourceManager) {
-  auto suffix = forStmt->getBeginLoc().printToString(sourceManager);
-  std::replace(suffix.begin(), suffix.end(), ':', '_');
-  std::replace(suffix.begin(), suffix.end(), '.', '_');
-  return "__forloop_" + suffix;
-}
-
 void TypeCorrector::insertCorrection(
     QualType type, llvm::SmallVector<std::string> &insertedDecls, int offset) {
   llvm::SmallVector<std::string> args;

@@ -18,6 +18,8 @@
 #include "mlir/IR/Verifier.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
+#include "mlir/Conversion/SCFToOpenMP/SCFToOpenMP.h"
+#include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Transforms/Passes.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
@@ -128,41 +130,9 @@ static void handleLoopDecls(const VarDecl *loopDecl,
   initDecls.push_back({{type, varName}, init});
 }
 
-mlir::Value CodeGen::VisitForStmt(ForStmt *forStmt) {
-  llvm::ScopedHashTableScope<llvm::StringRef, mlir::Value> forScope(
-      scopedHashTable);
-
-  llvm::ScopedHashTableScope<int, mlir::Value> constScope(constants);
-
-  const auto forLoopInitStmt = forStmt->getInit();
-  const auto forLoopInitDeclStmt = dyn_cast<DeclStmt>(forLoopInitStmt);
-
-  assert(forLoopInitDeclStmt && "init stmt is not a decl stmt");
-
-  ForLoopInitDecls initDecls;
-  assert(forLoopInitDeclStmt->isSingleDecl() && "loop must have a single decl");
-
-  const auto varDecl = dyn_cast<VarDecl>(forLoopInitDeclStmt->getSingleDecl());
-  handleLoopDecls(varDecl, initDecls);
-
-  Expr *lowerBound = nullptr;
-  for (const auto &it : initDecls) {
-    lowerBound = it.second;
-  }
-
-  const auto cond = forStmt->getCond();
-  assert(cond && "for loop doesn't have a conditional stmt");
-
-  Expr *upperBound = nullptr, *condLHS = nullptr;
-  if (auto *const binOp = dyn_cast<BinaryOperator>(cond)) {
-    if (binOp->getOpcode() == BinaryOperator::Opcode::BO_LT ||
-        binOp->getOpcode() == BinaryOperator::Opcode::BO_LE) {
-      upperBound = binOp->getRHS();
-      condLHS = binOp->getLHS();
-    }
-  }
-
-  assert(condLHS && upperBound && "invalid loop condition");
+static void checkForLoopExpressions(ForStmt *forStmt, ASTContext &astContext,
+                                    Expr *condLHS,
+                                    ForLoopInitDecls &initDecls) {
   bool isCondLHSInInitDecls = false;
   auto checkInitDeclsForExpr = [&initDecls](llvm::StringRef condVar) -> bool {
     for (const auto &it : initDecls) {
@@ -201,6 +171,54 @@ mlir::Value CodeGen::VisitForStmt(ForStmt *forStmt) {
     }
   }
   assert(isIncrementByOne && "The loop variable needs to increment by one");
+}
+
+static void getLoopBounds(ForStmt *forStmt, ForLoopInitDecls &initDecls,
+                          Expr *&lowerBound, Expr *&upperBound,
+                          Expr *&condLHS) {
+
+  for (const auto &it : initDecls) {
+    lowerBound = it.second;
+  }
+
+  const auto cond = forStmt->getCond();
+  assert(cond && "for loop doesn't have a conditional stmt");
+
+  if (auto *const binOp = dyn_cast<BinaryOperator>(cond)) {
+    if (binOp->getOpcode() == BinaryOperator::Opcode::BO_LT ||
+        binOp->getOpcode() == BinaryOperator::Opcode::BO_LE) {
+      upperBound = binOp->getRHS();
+      condLHS = binOp->getLHS();
+    }
+  }
+
+  assert(condLHS && upperBound && "invalid loop condition");
+}
+
+mlir::Value CodeGen::forLoopHandler(ForStmt *, bool isParallel) {
+  llvm::ScopedHashTableScope<llvm::StringRef, mlir::Value> forScope(
+      scopedHashTable);
+
+  llvm::ScopedHashTableScope<int, mlir::Value> constScope(constants);
+
+  const auto forLoopInitStmt = forStmt->getInit();
+  const auto forLoopInitDeclStmt = dyn_cast<DeclStmt>(forLoopInitStmt);
+
+  assert(forLoopInitDeclStmt && "init stmt is not a decl stmt");
+
+  ForLoopInitDecls initDecls;
+  assert(forLoopInitDeclStmt->isSingleDecl() && "loop must have a single decl");
+
+  const auto varDecl = dyn_cast<VarDecl>(forLoopInitDeclStmt->getSingleDecl());
+  handleLoopDecls(varDecl, initDecls);
+
+  Expr *lowerBound = nullptr, *upperBound = nullptr, *condLHS = nullptr;
+
+  getLoopBounds(const_cast<ForStmt *>(forStmt), initDecls, lowerBound,
+                upperBound, condLHS);
+
+  checkForLoopExpressions(const_cast<ForStmt *>(forStmt), astContext, condLHS,
+                          initDecls);
 
   Expr::EvalResult lowerBoundResult, upperBoundResult;
   if (lowerBound->EvaluateAsConstantExpr(lowerBoundResult, astContext)) {
@@ -217,18 +235,34 @@ mlir::Value CodeGen::VisitForStmt(ForStmt *forStmt) {
         auto step = opBuilder.create<mlir::ConstantIndexOp>(UNKNOWN_LOC, 1);
 
         /// generating the forloop and saving its induction variable
-        auto forLoopOp = opBuilder.create<mlir::scf::ForOp>(
-            UNKNOWN_LOC, mlirLB, mlirUB, step, llvm::None);
+
+        mlir::Region *loopBody = nullptr;
+        mlir::ValueRange inductionVars;
+
+        if (isParallel) {
+          auto parallelOp = opBuilder.create<mlir::scf::ParallelOp>
+              (UNKNOWN_LOC, mlir::ValueRange{mlirLB}, mlir::ValueRange{mlirUB},
+               mlir::ValueRange{step}, llvm::None);
+          loopBody = &parallelOp.getLoopBody();
+          inductionVars = parallelOp.getInductionVars();
+        } else {
+          auto forLoopOp = opBuilder.create<mlir::scf::ForOp>(
+              UNKNOWN_LOC, mlirLB, mlirUB, step, llvm::None);
+          loopBody = &forLoopOp.getLoopBody();
+          inductionVars = forLoopOp.getInductionVar();
+        }
+
         //        forLoopBodyBuilder();
-        auto inductionVar = forLoopOp.getInductionVar();
-        auto didDeclare = declare(varDecl->getName(), inductionVar);
-        assert(mlir::succeeded(didDeclare) &&
-               "induction variable must not be present in the hash table");
+        for (const auto &val: inductionVars) {
+          auto didDeclare = declare(varDecl->getName(), val);
+          assert(mlir::succeeded(didDeclare) &&
+              "induction variable must not be present in the hash table");
+        }
 
         /// generating the body of the for loop
-        auto &forLoopRegion = forLoopOp.getLoopBody();
-        auto &forLoopBlock = forLoopRegion.back();
-        opBuilder.setInsertionPointToStart(&forLoopBlock);
+//        auto &forLoopRegion = forLoopOp.getLoopBody();
+//        auto &forLoopBlock = forLoopRegion.back();
+        opBuilder.setInsertionPointToStart(&loopBody->back());
 
         const auto body = forStmt->getBody();
         if (const auto compStmt = dyn_cast<CompoundStmt>(body)) {
@@ -236,13 +270,22 @@ mlir::Value CodeGen::VisitForStmt(ForStmt *forStmt) {
             this->Visit(it);
           }
         } else
-          this->Visit(body);
+          this->Visit(const_cast<Stmt *>(body));
 
-//        assert(mlir::succeeded(mlir::verify(forLoopOp)) && "invalid forloop");
+        //        assert(mlir::succeeded(mlir::verify(forLoopOp)) && "invalid
+        //        forloop");
       }
     }
   }
   return nullptr;
+}
+
+mlir::Value CodeGen::VisitParallelForStmt(ForStmt *forStmt) {
+  return forLoopHandler(forStmt, true);
+}
+
+mlir::Value CodeGen::VisitForStmt(ForStmt *forStmt) {
+  return forLoopHandler(forStmt, true);
 }
 
 mlir::Value CodeGen::VisitImplicitCastExpr(ImplicitCastExpr *implicitCastExpr) {
@@ -410,7 +453,7 @@ const SmallVector<StringRef> &ForLoopArgs::getArgNames() const {
   return argNames;
 }
 
-void CodeGen::run() {
+std::unique_ptr<llvm::Module> CodeGen::generateLLVM() {
   /// First creating a function enclosing the loop,
   /// this function will take as argument the DeclRefExprs found inside the loop
   utils::Decls loopInputs;
@@ -418,20 +461,19 @@ void CodeGen::run() {
   utils::findLoopInputs(forS, astContext, loopInputs);
 
   /// creating the function
-
   for (auto pair : loopInputs) {
     loopArgs.append(typeGen.getType(pair.second), pair.first);
   }
+
   auto funcType = opBuilder.getFunctionType(loopArgs.getArgTypes(), llvm::None);
   llvm::ScopedHashTableScope<StringRef, mlir::Value> scope(scopedHashTable);
   llvm::ScopedHashTableScope<int, mlir::Value> constScope(constants);
 
   /// TODO find a better name (mangled) for the function
-  auto funcName = createFunctionName(const_cast<ForStmt *>(forStmt),
-                                     sourceManager);
+  auto funcName =
+      createFunctionName(const_cast<ForStmt *>(forStmt), sourceManager);
 
-  auto funcOp =
-      opBuilder.create<mlir::FuncOp>(UNKNOWN_LOC, funcName, funcType);
+  auto funcOp = opBuilder.create<mlir::FuncOp>(UNKNOWN_LOC, funcName, funcType);
   auto &entryBlock = *funcOp.addEntryBlock();
   for (auto it : llvm::zip(loopArgs.getArgNames(), entryBlock.getArguments())) {
     auto val = declare(std::get<0>(it), std::get<1>(it));
@@ -446,25 +488,27 @@ void CodeGen::run() {
   opBuilder.create<mlir::ReturnOp>(UNKNOWN_LOC);
   if (mlir::failed(mlir::verify(moduleOp))) {
     moduleOp.emitError("module verification error");
+    return nullptr;
+  }
+  mlir::PassManager pm(mlirContext);
+  mlir::OpPassManager &nestedModulePM = pm.nest<mlir::FuncOp>();
+  nestedModulePM.addPass(mlir::createConvertSCFToOpenMPPass());
+  pm.addPass(mlir::createLowerToCFGPass());
+  pm.addPass(mlir::createConvertOpenMPToLLVMPass());
+  if (mlir::failed(pm.run(moduleOp))) {
+    moduleOp->emitError("failed to lower module");
+    return nullptr;
   }
 
-  mlir::PassManager pm(mlirContext);
-  pm.addPass(mlir::createLowerToCFGPass());
-  pm.addPass(mlir::createLowerToLLVMPass());
-  if (mlir::failed(pm.run(moduleOp)))
-    moduleOp->emitError("failed to lower module");
-
-//  moduleOp.dump();
+//  pm.addPass(mlir::createLowerToLLVMPass());
 
   mlir::registerLLVMDialectTranslation(*moduleOp->getContext());
-  auto llvmModule = mlir::translateModuleToLLVMIR(moduleOp, llvmContext);
-  if (!llvmModule) {
+  auto newLLVMModule = mlir::translateModuleToLLVMIR(moduleOp, llvmContext);
+  if (!newLLVMModule) {
     llvm::errs() << "Failed to emit LLVM IR\n";
-    return;
+    return nullptr;
   }
-
-  llvm::outs() << *llvmModule << "\n";
-
+  return newLLVMModule;
 }
 
 } // namespace clang::tuner

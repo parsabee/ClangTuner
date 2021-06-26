@@ -41,7 +41,7 @@ public:
 
 class CodeGen : public StmtVisitor<CodeGen, mlir::Value> {
   SourceManager &sourceManager;
-  llvm::LLVMContext llvmContext;
+  llvm::LLVMContext &llvmContext;
   llvm::Module llvmModule;
   mlir::MLIRContext *mlirContext;
   mlir::ModuleOp &moduleOp;
@@ -78,9 +78,10 @@ class CodeGen : public StmtVisitor<CodeGen, mlir::Value> {
 
 public:
   CodeGen(ForStmt *forStmt, ASTContext &context, mlir::ModuleOp &moduleOp,
+          llvm::LLVMContext &llvmContext,
           mlir::OpBuilder &opBuilder, SourceManager &sourceManager,
           DiagnosticsEngine &diags)
-      : sourceManager(sourceManager), llvmContext(),
+      : sourceManager(sourceManager), llvmContext(llvmContext),
         llvmModule("llvm_mod", llvmContext),
         mlirContext(moduleOp->getContext()), moduleOp(moduleOp),
         opBuilder(opBuilder), astContext(context), forStmt(forStmt),
@@ -97,11 +98,15 @@ public:
 
   mlir::Value VisitBinaryOperator(BinaryOperator *);
 
+  mlir::Value forLoopHandler(ForStmt *, bool isParallel);
+
   mlir::Value VisitForStmt(ForStmt *);
+
+  mlir::Value VisitParallelForStmt(ForStmt *);
 
   mlir::Value VisitIntegerLiteral(IntegerLiteral *);
 
-  void run();
+  std::unique_ptr<llvm::Module> generateLLVM();
 };
 } // namespace clang::tuner
 

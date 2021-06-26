@@ -44,11 +44,6 @@ static std::string createFunctionDecl(Declarations &loopInputs,
       ss << arg;
       first2 = false;
     }
-    //    auto declStr = declType.getAsString();
-    //    if (declType.getTypePtr()->isArrayType()) {
-    //      typeCorrector.getExpandedTypes(declType);
-    //    }
-    //    ss << declStr;
     first = false;
   }
   ss << ");\n";
@@ -87,6 +82,8 @@ const std::string createFunctionName(ForStmt *forStmt,
                                      SourceManager &sourceManager) {
   auto suffix = forStmt->getBeginLoc().printToString(sourceManager);
   std::replace(suffix.begin(), suffix.end(), ':', '_');
+  std::replace(suffix.begin(), suffix.end(), '-', '_');
+  std::replace(suffix.begin(), suffix.end(), '/', '_');
   std::replace(suffix.begin(), suffix.end(), '.', '_');
   return "__forloop_" + suffix;
 }
@@ -121,7 +118,7 @@ void ForLoopRefactorer::performExtraction(AttributedStmt *stmt) {
       createFunctionCall(loopInputs, functionName, typeCorrector));
 
   rewriter.InsertText(sourceManager.getLocForStartOfFile(fileID),
-                      "#include <memory>\n");
+                      "#include <memory>\n"); //std::align is here
 
   // TODO, create the function decl after headers
   rewriter.InsertText(

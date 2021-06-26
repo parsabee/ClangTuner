@@ -7,6 +7,8 @@ set(CMAKE_CXX_FLAGS "-std=c++2a -Wall -O0 -fno-rtti ${LLVM_COMPILE_FLAGS}")
 set(LLVM_LINK_COMPONENTS support)
 set(CMAKE_BUILD_TYPE Debug)
 
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 find_package(MLIR REQUIRED CONFIG NO_DEFAULT_PATH)
 message(STATUS "Using MLIRConfig.cmake in:  ${MLIR_DIR}")
 
@@ -112,10 +114,13 @@ target_link_libraries(
         MLIRGPU
         MLIRTransforms
         MLIRSCFToStandard
+        MLIRSCFToOpenMP
+        MLIROpenMPToLLVM
         MLIRStandardToLLVM
         MLIRAffineTransforms
         MLIRAffineToStandard
         MLIRTargetLLVMIRImport
+        MLIRToLLVMIRTranslationRegistration
 
         LLVMAMDGPUCodeGen
         LLVMAMDGPUDesc

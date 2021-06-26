@@ -13,6 +13,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "clang/AST/ASTDumper.h"
 #include "clang/AST/ASTTypeTraits.h"
@@ -21,6 +22,8 @@
 #include "clang/Tooling/Refactoring/Extract/Extract.h"
 #include "clang/Tooling/Refactoring/RefactoringRuleContext.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "mlir/Target/LLVMIR/ModuleTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.h"
 
 namespace clang::tuner {
 
@@ -34,17 +37,22 @@ static bool isATuneAttr(AttributedStmt *AttributedStmt) {
   return false;
 }
 
+static mlir::ModuleOp initializeMlirModule(mlir::OpBuilder &opBuilder) {
+  auto theModule = mlir::ModuleOp::create(opBuilder.getUnknownLoc());
+
 #define LOAD_DIALECT(DIALECT)                                                  \
   theModule->getContext()->getOrLoadDialect<DIALECT>()
 
-static mlir::ModuleOp initializeMlirModule(mlir::OpBuilder &opBuilder) {
-  auto theModule = mlir::ModuleOp::create(opBuilder.getUnknownLoc());
-//  LOAD_DIALECT(mlir::clang_tune::ClangTuneDialect);
+  //  LOAD_DIALECT(mlir::clang_tune::ClangTuneDialect);
   LOAD_DIALECT(mlir::AffineDialect);
   LOAD_DIALECT(mlir::memref::MemRefDialect);
+  LOAD_DIALECT(mlir::omp::OpenMPDialect);
   LOAD_DIALECT(mlir::LLVM::LLVMDialect);
   LOAD_DIALECT(mlir::scf::SCFDialect);
   LOAD_DIALECT(mlir::StandardOpsDialect);
+  mlir::registerOpenMPDialectTranslation(*theModule->getContext());
+  //  theModule->getContext()->getOrLoadDialect<mlir::omp::OpenMPDialect>();
+#undef LOAD_DIALECT
   return theModule;
 }
 
@@ -144,13 +152,48 @@ bool FindAttrStmtsVisitor::VisitAttributedStmt(AttributedStmt *attributedStmt) {
   if (forStmt) {
     auto forloopName = createFunctionName(forStmt, sourceManager);
     auto module = initializeMlirModule(opBuilder);
-    CodeGen codeGen(forStmt, astContext, module, opBuilder,
-                    sourceManager, diags);
-    codeGen.run();
-    loopRefactorer.performExtraction(attributedStmt);
-    modules.insert({forloopName, std::move(module)});
+    auto llvmCntx = std::make_unique<llvm::LLVMContext>();
+    {
+      CodeGen codeGen(forStmt, astContext, module, *llvmCntx, opBuilder,
+                      sourceManager, diags);
+      auto llvmModule = codeGen.generateLLVM();
+      if (llvmModule) {
+        loopRefactorer.performExtraction(attributedStmt);
+        auto pair = std::make_pair(std::move(llvmCntx), std::move(llvmModule));
+        modules.insert({forloopName, std::move(pair)});
+      }
+    }
   }
   return true;
+}
+
+std::unique_ptr<tooling::FrontendActionFactory>
+newFindAttrStmtsFrontendActionFactory(mlir::MLIRContext &context,
+                                      Rewriter &rewriter,
+                                      DiagnosticsEngine &diags,
+                                      Modules &modules) {
+
+  class FindAttrStmtsFrontendActionFactory
+      : public tooling::FrontendActionFactory {
+    mlir::MLIRContext &context;
+    Rewriter &rewriter;
+    DiagnosticsEngine &diags;
+    Modules &modules;
+
+  public:
+    FindAttrStmtsFrontendActionFactory(mlir::MLIRContext &context,
+                                       Rewriter &rewriter,
+                                       DiagnosticsEngine &diags, Modules &modules)
+        : context(context), rewriter(rewriter), diags(diags), modules(modules) {}
+
+    std::unique_ptr<FrontendAction> create() override {
+      return std::make_unique<FindAttrStmts>(context, rewriter, diags, modules);
+    }
+  };
+
+  return std::unique_ptr<FindAttrStmtsFrontendActionFactory>(
+      new FindAttrStmtsFrontendActionFactory(context, rewriter, diags,
+                                             modules));
 }
 
 } // namespace clang::tuner
