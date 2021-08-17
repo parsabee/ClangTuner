@@ -4,8 +4,8 @@
 /// SourceRewriter is a module for refactoring out the relevant attributed stmts
 /// and rewriting the original source code
 
-#ifndef TUNER__FORLOOPREFACTORER_H
-#define TUNER__FORLOOPREFACTORER_H
+#ifndef TUNER__ATTRFORLOOPREFACTORER_H
+#define TUNER__ATTRFORLOOPREFACTORER_H
 
 #include "clang/AST/Stmt.h"
 #include "clang/Rewrite/Core/Rewriter.h"
@@ -18,14 +18,14 @@ namespace tuner {
 const std::string createFunctionName(ForStmt *forStmt,
                                SourceManager &sourceManager);
 
-class ForLoopRefactorer {
+class AttrForLoopRefactorer {
   SourceManager &sourceManager;
   ASTContext &astContext;
   Rewriter &rewriter;
   TypeCorrector typeCorrector;
 
 public:
-  ForLoopRefactorer(SourceManager &sourceManager, ASTContext &astContext,
+  AttrForLoopRefactorer(SourceManager &sourceManager, ASTContext &astContext,
                  Rewriter &rewriter)
       : sourceManager(sourceManager), astContext(astContext),
         rewriter(rewriter), typeCorrector(rewriter) {}
@@ -34,4 +34,4 @@ public:
 };
 } // namespace tuner
 } // namespace clang
-#endif // TUNER__FORLOOPREFACTORER_H
+#endif // TUNER__ATTRFORLOOPREFACTORER_H

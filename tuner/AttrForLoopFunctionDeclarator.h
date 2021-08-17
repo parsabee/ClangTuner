@@ -5,7 +5,7 @@
 #ifndef TUNER_FUNCTIONCREATOR_H
 #define TUNER_FUNCTIONCREATOR_H
 
-#include "TypeGen.h"
+#include "MLIRTypeGenerator.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/IR/BuiltinOps.h"

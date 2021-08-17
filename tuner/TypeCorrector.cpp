@@ -66,8 +66,11 @@ void TypeCorrector::insertCorrection(
 
 llvm::SmallVector<std::string> TypeCorrector::getExpandedTypes(QualType type) {
   llvm::SmallVector<std::string> args;
-  auto st = getBuiltinType(type.getTypePtr());
+  if (auto decayedType = dyn_cast<clang::DecayedType>(type)) {
+    type = decayedType->getOriginalType();
+  }
 
+  auto st = getBuiltinType(type.getTypePtr());
   if (type.getTypePtr()->isArrayType()) {
     SmallVector<int64_t> shape;
     findArrayShape(&type, shape);
@@ -93,7 +96,9 @@ llvm::SmallVector<std::string>
 TypeCorrector::getExpandedArgs(const DeclRefExpr *decl) {
   llvm::SmallVector<std::string> args;
   auto type = decl->getDecl()->getType();
-
+  if (auto decayedType = dyn_cast<clang::DecayedType>(type)) {
+    type = decayedType->getOriginalType();
+  }
   if (type.getTypePtr()->isArrayType()) {
     SmallVector<int64_t> shape;
     findArrayShape(&type, shape);

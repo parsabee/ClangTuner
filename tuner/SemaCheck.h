@@ -10,8 +10,7 @@
 namespace clang {
 namespace tuner {
 
-bool isATuneAttr(const AttributedStmt *);
-bool isATuneAttr(const char *name);
+bool isATuneAttr(const Attr *);
 
 } // namespace tuner
 } // namespace clang

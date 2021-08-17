@@ -11,9 +11,14 @@ void f() {
     b[i] = 2;
   }
 
-  [[clang::block_dim(32, 64)]]
-  for (int i = 0; i < N; i += 1) {
-    c[i] = a[i] + b[i];
+  [[parallel_for::mlir_opt("--parallel-loop-tiling",
+                           "--convert-scf-to-openmp",
+                           "--convert-openmp-to-llvm")]]
+//  [[parallel_for::mlir_opt("--enable-loop-simplifycfg-term-folding")]]
+  for(int j = 0; j < N; j+=1) {
+    for (int i = 0; i < N; i += 1) {
+      c[i] = a[i] + b[i];
+    }
   }
 
   for (int i = 0; i < N; i+= 1) {

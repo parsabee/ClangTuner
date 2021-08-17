@@ -7,17 +7,12 @@
 namespace clang {
 namespace tuner {
 
-bool isATuneAttr(const AttributedStmt *attrStmt) {
-  const auto attrs = attrStmt->getAttrs();
-  for (auto attr : attrs) {
-    if (isATuneAttr(attr->getSpelling()))
-      return true;
-  }
-  return false;
+static bool isATuneAttr(const char *name) {
+  return (std::strcmp(name, "parallel_for::mlir_opt") == 0);
 }
 
-bool isATuneAttr(const char *name) {
-  return (std::strcmp(name, "block_dim") == 0);
+bool isATuneAttr(const Attr *attr) {
+  return (isATuneAttr(attr->getNormalizedFullName().c_str()));
 }
 
 } // namespace tuner

@@ -1,0 +1,8 @@
+This text describes current issues and things to consider.
+
+To do:
+- Array Bufferization (converting c style arrays to memref dialect).
+
+Later:
+- Currently STL containers are used because they are easier to debug (more informative debug symbols),
+  but for release version should change to their LLVM equivalent.

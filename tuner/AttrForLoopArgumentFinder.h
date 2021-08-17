@@ -2,8 +2,8 @@
 // Created by Parsa Bagheri on 6/17/21.
 //
 
-#ifndef TUNER__LOOPINPUTFINDER_H
-#define TUNER__LOOPINPUTFINDER_H
+#ifndef TUNER__ATTRFORLOOPARGUMENTFINDER_H
+#define TUNER__ATTRFORLOOPARGUMENTFINDER_H
 
 #include "clang/AST/RecursiveASTVisitor.h"
 
@@ -34,10 +34,10 @@ public:
 /// Finds all declaration references within a for loop to be passed as the loops
 /// arguments
 /// TODO: exclude the decl refs that their declaration is within the loop
-void findLoopInputs(ForStmt *forStmt, ASTContext &context,
+void findAttrForLoopArguments(ForStmt *forStmt, ASTContext &context,
                            Declarations &inputArgs);
 
 } // namespace tuner
 } // namespace clang
 
-#endif // TUNER__LOOPINPUTFINDER_H
+#endif // TUNER__ATTRFORLOOPARGUMENTFINDER_H

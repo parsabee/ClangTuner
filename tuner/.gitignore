@@ -1,5 +1,5 @@
-/build
-/build*
-/cmake-build-debug
-/cmake-build-debug*
+build/
+build/*
+cmake-build-debug/
+cmake-build-debug/*
 

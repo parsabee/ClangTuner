@@ -5,7 +5,7 @@
 #ifndef CLANG_FINDATTRSTMTS_H
 #define CLANG_FINDATTRSTMTS_H
 
-#include "ForLoopRefactorer.h"
+#include "AttrForLoopRefactorer.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -25,10 +25,6 @@
 
 #include <iostream>
 
-extern bool getStdHeaders(llvm::SmallVector<std::string> &headers,
-                          bool addFlag); // defined
-// in main
-
 namespace clang {
 namespace tuner {
 
@@ -39,26 +35,45 @@ namespace tuner {
 using Modules = llvm::StringMap<std::pair<std::unique_ptr<llvm::LLVMContext>,
                                           std::unique_ptr<llvm::Module>>>;
 
+struct TunableMLIRModule {
+  mlir::ModuleOp theModule;
+};
+
+using TunableMLIRModules = llvm::SmallVector<TunableMLIRModule>;
+
+using TuningUnsignedParameters = llvm::StringMap<llvm::SmallVector<unsigned>>;
+
 /// Visits AttrStmts and if the attribute is a "tune" attribute, it will extract
 /// the ForStmt within it into its own function. An object of this class changes
 /// the ASTContext
 class FindAttrStmtsVisitor : public RecursiveASTVisitor<FindAttrStmtsVisitor> {
+public:
+  enum class VisitorTy {
+    Refactorer,
+    MLIRCodeGenerator
+  };
+
+private:
   bool isInTuneAttr = false;
   mlir::ModuleOp theModule;
   mlir::OpBuilder opBuilder;
   ASTContext &astContext;
   SourceManager &sourceManager;
-  ForLoopRefactorer loopRefactorer;
+  AttrForLoopRefactorer loopRefactorer;
   DiagnosticsEngine &diags;
   Modules &modules;
+  VisitorTy visitorTy;
 
 public:
   FindAttrStmtsVisitor(mlir::MLIRContext &context, ASTContext &astContext,
                        SourceManager &sm, Rewriter &rewriter,
-                       DiagnosticsEngine &diags, Modules &modules)
+                       DiagnosticsEngine &diags, Modules &modules,
+                       VisitorTy visitorTy)
       : opBuilder(&context), astContext(astContext), sourceManager(sm),
         loopRefactorer(sm, astContext, rewriter), diags(diags),
-        modules(modules) {}
+        modules(modules), visitorTy(visitorTy) {}
+
+  bool handleMLIROptAttr(AttributedStmt *, const MLIROptAttr *, ForStmt *);
   bool VisitAttributedStmt(AttributedStmt *attributedStmt);
 
 private:
@@ -73,47 +88,44 @@ class FindAttrStmtsConsumer : public ASTConsumer {
 public:
   FindAttrStmtsConsumer(mlir::MLIRContext &context, ASTContext &astContext,
                         SourceManager &sm, Rewriter &rewriter,
-                        DiagnosticsEngine &diags, Modules &modules)
-      : Visitor(context, astContext, sm, rewriter, diags, modules) {}
+                        DiagnosticsEngine &diags, Modules &modules,
+                        FindAttrStmtsVisitor::VisitorTy visitorTy)
+      : Visitor(context, astContext, sm, rewriter, diags, modules, visitorTy) {}
   virtual void HandleTranslationUnit(ASTContext &Context) {
     Visitor.TraverseDecl(Context.getTranslationUnitDecl());
   }
 };
 
-class FindAttrStmts : public ASTFrontendAction {
+class AttrForLoopFinder : public ASTFrontendAction {
   mlir::MLIRContext &context;
   Rewriter &rewriter;
   DiagnosticsEngine &diags;
   Modules &modules;
+  FindAttrStmtsVisitor::VisitorTy visitorTy;
 
 public:
-  FindAttrStmts(mlir::MLIRContext &context, Rewriter &rewriter,
-                DiagnosticsEngine &diags, Modules &modules)
-      : context(context), rewriter(rewriter), diags(diags), modules(modules) {}
+  AttrForLoopFinder(mlir::MLIRContext &context, Rewriter &rewriter,
+                    DiagnosticsEngine &diags, Modules &modules,
+                    FindAttrStmtsVisitor::VisitorTy visitorTy)
+      : context(context), rewriter(rewriter), diags(diags), modules(modules),
+        visitorTy(visitorTy)
+  {}
 
   std::unique_ptr<ASTConsumer>
   CreateASTConsumer(CompilerInstance &Compiler,
                     llvm::StringRef InFile) override {
     rewriter.setSourceMgr(Compiler.getSourceManager(), Compiler.getLangOpts());
-    SmallVector<std::string> headers;
-    if (getStdHeaders(headers, false)) {
-      for (const auto &h : headers) {
-        Compiler.getHeaderSearchOptsPtr()->AddPath(
-            h, frontend::IncludeDirGroup::After, false, false);
-      }
-    }
-
     return std::make_unique<FindAttrStmtsConsumer>(
         context, Compiler.getASTContext(), Compiler.getSourceManager(),
-        rewriter, diags, modules);
+        rewriter, diags, modules, visitorTy);
   }
 };
 
 std::unique_ptr<tooling::FrontendActionFactory>
-newFindAttrStmtsFrontendActionFactory(mlir::MLIRContext &context,
-                                      Rewriter &rewriter,
-                                      DiagnosticsEngine &diags,
-                                      Modules &modules);
+newFindAttrStmtsFrontendActionFactory(
+    mlir::MLIRContext &context, Rewriter &rewriter, DiagnosticsEngine &diags,
+    Modules &modules,
+    FindAttrStmtsVisitor::VisitorTy visitorTy);
 
 } // namespace tuner
 } // namespace clang

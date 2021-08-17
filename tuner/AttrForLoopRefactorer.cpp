@@ -2,8 +2,8 @@
 // Created by Parsa Bagheri on 6/16/21.
 //
 
-#include "ForLoopRefactorer.h"
-#include "LoopInputFinder.h"
+#include "AttrForLoopRefactorer.h"
+#include "AttrForLoopArgumentFinder.h"
 #include "SemaCheck.h"
 
 #include <algorithm>
@@ -88,15 +88,15 @@ const std::string createFunctionName(ForStmt *forStmt,
   return "__forloop_" + suffix;
 }
 
-void ForLoopRefactorer::performExtraction(AttributedStmt *stmt) {
+void AttrForLoopRefactorer::performExtraction(AttributedStmt *stmt) {
 
   ForStmt *forStmt = nullptr;
 
   auto attrs = stmt->getAttrs();
 
   for (auto attr : attrs) {
-    if (isATuneAttr(attr->getSpelling())) {
-      if (auto blockDim = dyn_cast<TuneBlockDimAttr>(attr)) {
+    if (isATuneAttr(attr)) {
+      if (auto blockDim = dyn_cast<MLIROptAttr>(attr)) {
         forStmt = dyn_cast<ForStmt>(stmt->getSubStmt());
       }
     }
@@ -107,7 +107,7 @@ void ForLoopRefactorer::performExtraction(AttributedStmt *stmt) {
   rewriter.RemoveText(stmt->getSourceRange());
 
   Declarations loopInputs;
-  findLoopInputs(forStmt, astContext, loopInputs);
+  findAttrForLoopArguments(forStmt, astContext, loopInputs);
 
   auto fileID = sourceManager.getFileID(stmt->getBeginLoc());
 

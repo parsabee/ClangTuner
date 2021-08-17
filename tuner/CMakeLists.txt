@@ -2,12 +2,16 @@ cmake_minimum_required(VERSION 3.16)
 project(tuner)
 
 set(CMAKE_CXX_STANDARD 20)
-set(CMAKE_CXX_FLAGS "-std=c++2a -Wall -O0 -fno-rtti ${LLVM_COMPILE_FLAGS}")
+set(CMAKE_CXX_FLAGS "-std=c++20 -Wall -O0 -fno-rtti ${LLVM_COMPILE_FLAGS}")
 
 set(LLVM_LINK_COMPONENTS support)
 set(CMAKE_BUILD_TYPE Debug)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+set(CLANG_PATH "/usr/local/bin/clang++")
+
+add_definitions(-DDEBUG -DCLANG_PATH=${CLANG_PATH}) #used in program
 
 find_package(MLIR REQUIRED CONFIG NO_DEFAULT_PATH)
 message(STATUS "Using MLIRConfig.cmake in:  ${MLIR_DIR}")
@@ -48,6 +52,24 @@ message(STATUS "including ${CLANG_INCLUDE_DIRS}")
 include_directories(${LLVM_INCLUDE_DIRS})
 message(STATUS "including ${LLVM_INCLUDE_DIRS}")
 
+get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
+get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
+
+set(LIBS
+        ${dialect_libs}
+        ${conversion_libs}
+        MLIRLoopAnalysis
+        MLIRAnalysis
+        MLIRDialect
+        MLIREDSC
+        MLIROptLib
+        MLIRParser
+        MLIRPass
+        MLIRTransforms
+        MLIRTransformUtils
+        MLIRSupport
+        MLIRIR
+        )
 
 add_subdirectory(include)
 
@@ -69,17 +91,21 @@ add_clang_tune_target(clang-tune
         main.cpp
         FindTuneAttr.h
         FindTuneAttr.cpp
-        FindAttrStmts.h
-        FindAttrStmts.cpp
-        FunctionCreator.cpp
-        CodeGen.cpp
-        TypeGen.cpp
+        AttrForLoopFinder.h
+        AttrForLoopFinder.cpp
+        AttrForLoopFunctionDeclarator.cpp
+        MLIRCodeGenerator.cpp
+        MLIRTypeGenerator.cpp
         TypeCorrector.cpp
-        ForLoopRefactorer.cpp
+        AttrForLoopRefactorer.cpp
         SemaCheck.cpp
-        LoopInputFinder.cpp
+        AttrForLoopArgumentFinder.cpp
+        OpenMPConfigurer.cpp
+        OptimizationDriver.cpp
+        Driver.cpp
         mlir/Dialect.cpp
         mlir/MLIRGen.cpp
+        ParallelizingPass.cpp
 
         DEPENDS
         ClangTuneIncGen
@@ -96,6 +122,7 @@ target_link_libraries(
         ${LLVM_AVAILABLE_LIBS}
         ${LLVM_LIBS}
         ${MLIR_LIBS}
+        ${LIBS}
         clangAST
         clangBasic
         clangDriver
@@ -121,6 +148,14 @@ target_link_libraries(
         MLIRAffineToStandard
         MLIRTargetLLVMIRImport
         MLIRToLLVMIRTranslationRegistration
+        MLIROptLib
+        MLIRParser
+        MLIRPass
+        MLIRTransforms
+        MLIRTransformUtils
+        MLIRSupport
+        MLIRLLVMToLLVMIRTranslation
+
 
         LLVMAMDGPUCodeGen
         LLVMAMDGPUDesc

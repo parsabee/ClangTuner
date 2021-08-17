@@ -2,12 +2,12 @@
 // Created by Parsa Bagheri on 6/17/21.
 //
 
-#include "LoopInputFinder.h"
+#include "AttrForLoopArgumentFinder.h"
 
 namespace clang {
 namespace tuner {
 
-void findLoopInputs(ForStmt *forStmt, ASTContext &context,
+void findAttrForLoopArguments(ForStmt *forStmt, ASTContext &context,
                            Declarations &inputArgs) {
   Declarations declRefs, varDecls;
   DeclCollector declCollector(varDecls, declRefs);

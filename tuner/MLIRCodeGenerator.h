@@ -5,13 +5,13 @@
 #ifndef TUNER_CODEGEN_H
 #define TUNER_CODEGEN_H
 
-#include "TypeGen.h"
+#include "MLIRTypeGenerator.h"
 
 #include "../../clang/lib/CodeGen/CodeGenModule.h"
 
+#include "clang/Basic/CodeGenOptions.h"
 #include "clang/Lex/HeaderSearchOptions.h"
 #include "clang/Lex/PreprocessorOptions.h"
-#include "clang/Basic/CodeGenOptions.h"
 
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
@@ -27,19 +27,19 @@ namespace clang::tuner {
 
 struct ForLoopArgs {
 private:
-  SmallVector<mlir::Type> argTypes;
-  SmallVector<StringRef> argNames;
-  SmallVector<StringRef> mlirArgNames;
+  std::vector<mlir::Type> argTypes;
+  std::vector<StringRef> argNames;
+  std::vector<StringRef> mlirArgNames;
   llvm::SmallDenseMap<StringRef, size_t> nameArgMap;
 
 public:
   bool append(mlir::Type type, StringRef name);
   const mlir::Type lookUp(StringRef name) const;
-  const SmallVector<mlir::Type> &getArgTypes() const;
-  const SmallVector<StringRef> &getArgNames() const;
+  const std::vector<mlir::Type> &getArgTypes() const;
+  const std::vector<StringRef> &getArgNames() const;
 };
 
-class CodeGen : public StmtVisitor<CodeGen, mlir::Value> {
+class MLIRCodeGenerator : public StmtVisitor<MLIRCodeGenerator, mlir::Value> {
   SourceManager &sourceManager;
   llvm::LLVMContext &llvmContext;
   llvm::Module llvmModule;
@@ -49,16 +49,18 @@ class CodeGen : public StmtVisitor<CodeGen, mlir::Value> {
   ASTContext &astContext;
   const ForStmt *forStmt;
   ForLoopArgs loopArgs;
+
+  // Use this for generating llvm types from c types
   ::clang::CodeGen::CodeGenModule CGModule;
 
   // generates the mlir type of expr
-  TypeGen typeGen;
+  MLIRTypeGenerator typeGen;
 
   // Storing the stack allocations
   llvm::ScopedHashTable<llvm::StringRef, mlir::Value> scopedHashTable;
-  llvm::ScopedHashTable<int, mlir::Value> constants;
+  llvm::DenseMap<int, mlir::Value> indexConstants;
 
-  mlir::LogicalResult declare(llvm::StringRef var, mlir::Value value);
+  void declare(llvm::StringRef var, mlir::Value value);
 
   mlir::Value handleVarDecl(VarDecl *);
 
@@ -77,16 +79,16 @@ class CodeGen : public StmtVisitor<CodeGen, mlir::Value> {
   mlir::Value createConstantIndex(unsigned int index);
 
 public:
-  CodeGen(ForStmt *forStmt, ASTContext &context, mlir::ModuleOp &moduleOp,
-          llvm::LLVMContext &llvmContext,
-          mlir::OpBuilder &opBuilder, SourceManager &sourceManager,
-          DiagnosticsEngine &diags)
+  MLIRCodeGenerator(ForStmt *forStmt, ASTContext &context, mlir::ModuleOp &moduleOp,
+                    llvm::LLVMContext &llvmContext,
+                    mlir::OpBuilder &opBuilder, SourceManager &sourceManager,
+                    DiagnosticsEngine &diags)
       : sourceManager(sourceManager), llvmContext(llvmContext),
         llvmModule("llvm_mod", llvmContext),
         mlirContext(moduleOp->getContext()), moduleOp(moduleOp),
         opBuilder(opBuilder), astContext(context), forStmt(forStmt),
-        typeGen(forStmt, astContext, moduleOp, opBuilder, llvmContext,
-                llvmModule), CGModule(context, {}, {}, {}, llvmModule, diags) {}
+        CGModule(context, {}, {}, {}, llvmModule, diags),
+        typeGen(moduleOp, CGModule.getTypes()) {}
 
   mlir::Value VisitImplicitCastExpr(ImplicitCastExpr *);
 
@@ -102,12 +104,14 @@ public:
 
   mlir::Value VisitForStmt(ForStmt *);
 
-  mlir::Value VisitParallelForStmt(ForStmt *);
+  //  mlir::Value VisitParallelForStmt(ForStmt *);
 
   mlir::Value VisitIntegerLiteral(IntegerLiteral *);
 
-  std::unique_ptr<llvm::Module> generateLLVM();
-};
-} // namespace clang::tuner
+  std::unique_ptr<llvm::Module> performLoweringAndOptimizationPipeline(llvm::SmallVector<StringRef> &);
 
-#endif // TUNER_CODEGEN_H
+  bool lowerToMLIR();
+};
+}// namespace clang::tuner
+
+#endif// TUNER_CODEGEN_H
