@@ -18,7 +18,7 @@
 /// this will be a generic operation in the future
 void axpy(TYPE a, TYPE x[N], TYPE y[N], TYPE c[N]) {
 
-  [[parallel_for::mlir_opt("--parallel-loop-tiling")]]
+  [[parallel_for::mlir_opt("--convert-scf-to-openmp", "--convert-openmp-to-llvm")]]
   for (size_t i = 0; i < N; i++) {
       c[i] = a * x[i] + y[i];
   }

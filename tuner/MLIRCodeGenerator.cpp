@@ -31,8 +31,11 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
+#include "llvm/Analysis/InstructionSimplify.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Program.h"
+#include "llvm/Transforms/IPO/StripSymbols.h"
 
 #include "CommandLineOpts.h"
 
@@ -645,20 +648,20 @@ bool MLIRCodeGenerator::lowerToMLIR() {
 }
 
 static std::unique_ptr<llvm::Module>
-lowerMLIRModuleOpToLLVModule(mlir::ModuleOp &moduleOp,
-                             mlir::MLIRContext *mlirContext,
-                             llvm::LLVMContext &llvmContext) {
+convertToLLVMIR(mlir::ModuleOp &moduleOp, mlir::MLIRContext *mlirContext,
+                llvm::LLVMContext &llvmContext) {
   mlir::registerAllPasses();
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
 
   // First lower to llvm dialect (if not already in that dialect)
-  mlir::PassManager pm(mlirContext);
-  pm.addPass(mlir::createLowerToLLVMPass());
+  mlir::PassManager mlirPM(mlirContext);
 
-  pm.addPass(mlir::createLowerToCFGPass());
-  //  pm.addPass(mlir::createConvertOpenMPToLLVMPass());
-  if (mlir::failed(pm.run(moduleOp))) {
+  mlirPM.addPass(mlir::createLowerToCFGPass());
+
+  mlirPM.addPass(mlir::createLowerToLLVMPass());
+
+  if (mlir::failed(mlirPM.run(moduleOp))) {
     moduleOp->emitError("failed to lower module");
 #ifdef DEBUG
     moduleOp->dump();
@@ -683,10 +686,17 @@ lowerMLIRModuleOpToLLVModule(mlir::ModuleOp &moduleOp,
     return nullptr;
   }
 
+  // If debug symbols are not required, this llvm pass removes them
+  if (!SaveDebugSymbols) {
+    llvm::ModuleAnalysisManager llvmAM;
+    llvm::StripSymbolsPass llvmPass;
+    llvmPass.run(*newLLVMModule, llvmAM);
+  }
+
   if (SaveLLVMModule.getValue()) {
     SmallString<256> fileName;
-    const auto *sources = &OptionsParser->getSourcePathList();
-    if (!writeModuleToFile<llvm::Module>(sources->at(0) + "_for_loops.ll",
+    const auto &sources = OptionsParser->getSourcePathList();
+    if (!writeModuleToFile<llvm::Module>(sources.at(0) + "_for_loops.ll",
                                          fileName, *newLLVMModule))
       llvm::errs() << "failed to write the generated llvm "
                       "module to file\n";
@@ -701,11 +711,14 @@ MLIRCodeGenerator::performLoweringAndOptimizationPipeline(
 
   if (!lowerToMLIR())
     return nullptr;
+
   auto optimized = runOpt(&moduleOp, mlirContext, optArgs);
   if (!optimized)
     return nullptr;
 
-  return lowerMLIRModuleOpToLLVModule(*optimized, mlirContext, llvmContext);
+  auto module = convertToLLVMIR(*optimized, mlirContext, llvmContext);
+
+  return module;
 
   /// First creating a function enclosing the loop,
   /// this function will take as argument the DeclRefExprs found inside the loop

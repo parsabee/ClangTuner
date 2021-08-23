@@ -79,8 +79,8 @@ class MLIRCodeGenerator : public StmtVisitor<MLIRCodeGenerator, mlir::Value> {
   mlir::Value createConstantIndex(unsigned int index);
 
 public:
-  MLIRCodeGenerator(ForStmt *forStmt, ASTContext &context, mlir::ModuleOp &moduleOp,
-                    llvm::LLVMContext &llvmContext,
+  MLIRCodeGenerator(ForStmt *forStmt, ASTContext &context,
+                    mlir::ModuleOp &moduleOp, llvm::LLVMContext &llvmContext,
                     mlir::OpBuilder &opBuilder, SourceManager &sourceManager,
                     DiagnosticsEngine &diags)
       : sourceManager(sourceManager), llvmContext(llvmContext),
@@ -108,10 +108,11 @@ public:
 
   mlir::Value VisitIntegerLiteral(IntegerLiteral *);
 
-  std::unique_ptr<llvm::Module> performLoweringAndOptimizationPipeline(llvm::SmallVector<StringRef> &);
+  std::unique_ptr<llvm::Module>
+  performLoweringAndOptimizationPipeline(llvm::SmallVector<StringRef> &);
 
   bool lowerToMLIR();
 };
-}// namespace clang::tuner
+} // namespace clang::tuner
 
-#endif// TUNER_CODEGEN_H
+#endif // TUNER_CODEGEN_H

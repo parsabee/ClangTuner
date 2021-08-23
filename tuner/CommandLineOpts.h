@@ -21,6 +21,8 @@ extern llvm::cl::opt<bool> SaveLLVMModule;
 
 extern llvm::cl::opt<bool> SaveRefactoredSourceFile;
 
+extern llvm::cl::opt<bool> SaveDebugSymbols;
+
 extern clang::tooling::CommonOptionsParser *OptionsParser;
 
 #endif // TUNER__COMMANDLINEOPTS_H

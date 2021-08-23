@@ -2,6 +2,20 @@
 // Created by parsa on 4/24/21.
 //
 
+/// Pipeline of the compiler:
+/// i) Generate mlir code for the attributed statements with the
+/// MLIRCodeGenerator. (optionally save to file with -m0)
+/// ii) Perform additional optimizations with mlir-opt. (optionally save to
+/// file with -m1)
+/// iii) Lower to llvm ir dialect. (optionally save to file with -m2)
+/// iv) Convert llvm dialect to llvm ir module. (optionally save to file with
+/// -m3)
+/// v) Refactor the original source code(extract the mlir attributed stmts
+/// into functions). (optionally save to file with -rs)
+/// vi) Compile the refactored code with clang down to llvm bit code.
+/// vii) Link the two llvm modules modules with the llvm::Linker
+/// viii) Write bitcode to file
+
 #include "AttrForLoopFinder.h"
 #include "AttrForLoopRefactorer.h"
 #include "Driver.h"
@@ -19,8 +33,10 @@
 #include "clang/Frontend/TextDiagnosticPrinter.h"
 #include "clang/Tooling/CommonOptionsParser.h"
 #include "clang/Tooling/Tooling.h"
+#include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/Linker/Linker.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Host.h"
@@ -30,8 +46,11 @@
 #include "llvm/Support/Signals.h"
 #include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/Transforms/IPO/StripSymbols.h"
+
 #include <fstream>
 #include <iostream>
+#include <tuple>
 
 #include "CommandLineOpts.h"
 
@@ -39,67 +58,11 @@ using namespace clang;
 using namespace clang::driver;
 using namespace clang::tooling;
 
-bool getStdHeaders(SmallVector<std::string> &headers, bool addFlag = true) {
-  int InputFD;
-  SmallString<32> InputFile, OutputFile;
-  llvm::sys::fs::createTemporaryFile("header-finder-input", "", InputFD,
-                                     InputFile);
-  llvm::sys::fs::createTemporaryFile("header-finder-output", "", OutputFile);
-  llvm::FileRemover InputRemover(InputFile.c_str());
-  llvm::FileRemover OutputRemover(OutputFile.c_str());
-  Optional<StringRef> Redirects[] = {StringRef(""), StringRef("/dev/null"),
-                                     StringRef(OutputFile)};
-  StringRef Args[] = {"-E", "-v", "-x", "c++", "/dev/null", "-fsyntax-only"};
-  auto pathOrErr = llvm::sys::findProgramByName("cc");
-  if (!pathOrErr)
-    return false;
-  const std::string &path = *pathOrErr;
-  int RunResult = llvm::sys::ExecuteAndWait(path, Args, None, Redirects);
-  if (RunResult != 0)
-    return false;
-
-  auto OutputBuf = llvm::MemoryBuffer::getFile(OutputFile.c_str());
-  if (!OutputBuf)
-    return false;
-  StringRef Output = OutputBuf.get()->getBuffer();
-
-  SmallVector<StringRef, 64> Lines;
-  Output.split(Lines, "\n");
-
-  bool isSysHeader = false;
-  for (auto l : Lines) {
-    if (l.startswith("End of search list.")) {
-      isSysHeader = false;
-    }
-    if (isSysHeader) {
-      std::string includeHeader(l);
-      if (addFlag)
-        includeHeader.replace(includeHeader.begin(), includeHeader.begin() + 1,
-                              "-I");
-      else
-        includeHeader.replace(includeHeader.begin(), includeHeader.begin() + 1,
-                              "");
-      std::size_t found = includeHeader.find(" ");
-      if (found != std::string::npos)
-        includeHeader.replace(includeHeader.begin() + found,
-                              includeHeader.end(), "");
-
-      headers.push_back(std::move(includeHeader));
-    }
-    if (l.startswith("#include <...> search starts here:")) {
-      isSysHeader = true;
-    }
-  }
-
-  return true;
-}
-
 std::string GetExecutablePath(const char *Argv0, void *MainAddr) {
   return llvm::sys::fs::getMainExecutable(Argv0, MainAddr);
 }
 
 llvm::ExitOnError ExitOnErr;
-
 
 // Defining the command line options, these options are declared in
 // CommandLineOpts.h
@@ -134,24 +97,170 @@ llvm::cl::opt<bool>
                              llvm::cl::desc("Save the refactored source file."),
                              llvm::cl::cat(ClangTuneCategory));
 
-clang::tooling::CommonOptionsParser *OptionsParser;
+llvm::cl::opt<bool> SaveDebugSymbols(
+    "dbg",
+    llvm::cl::desc("Save source information for creating debug symbols."),
+    llvm::cl::cat(ClangTuneCategory));
 
-/// Pipeline of the compiler:
-/// i) Generate mlir code for the attributed statements with the
-/// MLIRCodeGenerator. (optionally save to file with -m0)
-/// ii) Perform additional optimizations with mlir-opt. (optionally save to
-/// file with -m1)
-/// iii) Lower to llvm ir dialect. (optionally save to file with -m2)
-/// iv) Convert llvm dialect to llvm ir module. (optionally save to file with
-/// -m3)
-/// v) Refactor the original source code(extract the mlir attributed stmts
-/// into functions). (optionally save to file with -rs)
-/// vi) Compile the refactored code with clang down to llvm bit code.
-/// vii) Link the two llvm modules modules with the llvm::Linker
-/// viii) Write bitcode to file
+clang::tooling::CommonOptionsParser *OptionsParser;
 
 // static clang::tooling::CommonOptionsParser &OptionsParser;
 // static llvm::Expected<clang::tooling::CommonOptionsParser> ExpectedParser;
+
+/// Creating a compilation instance from the args
+std::tuple<std::unique_ptr<Compilation>, std::unique_ptr<CodeGenAction>>
+PerformCompilation(Driver &TheDriver, llvm::SmallVector<const char *> &Args,
+                   DiagnosticsEngine &Diags, const char *Argv0, void *MainAddr,
+                   llvm::LLVMContext *llvmContext) {
+  std::unique_ptr<Compilation> compilation(TheDriver.BuildCompilation(Args));
+  if (!compilation)
+    return {nullptr, nullptr};
+
+  const driver::JobList &Jobs = compilation->getJobs();
+  if (Jobs.size() != 1 || !isa<driver::Command>(*Jobs.begin())) {
+    SmallString<256> Msg;
+    llvm::raw_svector_ostream OS(Msg);
+    Jobs.Print(OS, "; ", true);
+    Diags.Report(diag::err_fe_expected_compiler_job) << OS.str();
+    return {nullptr, nullptr};
+  }
+
+  const driver::Command &Cmd = cast<driver::Command>(*Jobs.begin());
+  if (llvm::StringRef(Cmd.getCreator().getName()) != "clang") {
+    Diags.Report(diag::err_fe_expected_clang_command);
+    return {nullptr, nullptr};
+  }
+
+  // Initialize a compiler invocation object from clang (-cc1) arguments.
+  const llvm::opt::ArgStringList &CCArgs = Cmd.getArguments();
+  std::unique_ptr<CompilerInvocation> compilerInvocation(
+      new CompilerInvocation);
+  CompilerInvocation::CreateFromArgs(*compilerInvocation, CCArgs, Diags);
+
+  // FIXME: This is copied from cc1_main.cpp; simplify and eliminate.
+  // Create a compiler instance to handle the actual work.
+  CompilerInstance Clang;
+  Clang.setInvocation(std::move(compilerInvocation));
+
+  // Create the compilers actual diagnostics engine.
+  Clang.createDiagnostics();
+  if (!Clang.hasDiagnostics())
+    return {nullptr, nullptr};
+
+  if (Clang.getHeaderSearchOpts().UseBuiltinIncludes &&
+      Clang.getHeaderSearchOpts().ResourceDir.empty())
+    Clang.getHeaderSearchOpts().ResourceDir =
+        CompilerInvocation::GetResourcesPath(Argv0, MainAddr);
+
+  // Create and execute the frontend to generate an LLVM bitcode module.
+  std::unique_ptr<CodeGenAction> llvmIRAction(
+      new EmitLLVMOnlyAction(llvmContext));
+  if (!Clang.ExecuteAction(*llvmIRAction)) {
+    return {nullptr, nullptr};
+  }
+
+  return {std::move(compilation), std::move(llvmIRAction)};
+}
+
+/// Creates a const char * vector from a string vector
+llvm::SmallVector<const char *>
+getCStrVec(llvm::SmallVector<std::string> &strVec) {
+
+  llvm::SmallVector<const char *> cStrVec(strVec.size());
+  for (int i = 0; i < strVec.size(); i++) {
+    cStrVec[i] = strVec[i].c_str();
+  }
+
+  return std::move(cStrVec);
+}
+
+/// Creating the argv to be passed to clang
+llvm::SmallVector<std::string>
+CreateClangArgs(const std::vector<std::string> &sources, const char *Argv0,
+                const char *refactoredFileCpp) {
+  llvm::SmallVector<std::string> CLArgs;
+
+  // Adding compilation database's flags to args
+  auto &compilationDatabase = OptionsParser->getCompilations();
+  for (const auto &it : compilationDatabase.getAllCompileCommands()) {
+    // we might need to switch directories here
+    for (auto &elm : it.CommandLine) {
+      bool isSource = false;
+      for (const auto &source : sources) {
+        if (elm == source) {
+          isSource = true;
+        }
+      }
+      if (!isSource)
+        CLArgs.push_back(elm.c_str());
+    }
+    CLArgs.push_back(it.Output.c_str());
+  }
+
+  if (CLArgs.empty())
+    CLArgs.push_back(Argv0);
+
+  for (const auto &it : sources) {
+    CLArgs.push_back(it.c_str());
+  }
+
+  CLArgs.push_back("-fsyntax-only");
+
+  return std::move(CLArgs);
+}
+
+/// Creating the clang driver
+Driver CreateClangDriver(DiagnosticsEngine &Diags, const char *Argv0,
+                         void *MainAddr) {
+  const std::string TripleStr = llvm::sys::getProcessTriple();
+  llvm::Triple T(TripleStr);
+  ExitOnErr.setBanner("clang tuner");
+  std::string Path = GetExecutablePath(Argv0, MainAddr);
+
+  Driver TheDriver(Path, T.str(), Diags);
+  TheDriver.setTitle("clang tuner");
+  TheDriver.setCheckInputsExist(false);
+
+  return TheDriver;
+}
+
+SmallVector<std::string>
+PerformRefactoring(const std::vector<std::string> &sources,
+                   DiagnosticsEngine &Diags) {
+  SmallVector<std::string> refactoredFiles;
+
+  // Refactoring the original files
+  for (const auto &source : sources) {
+    clang::Rewriter rewriter;
+    auto frontendAction =
+        clang::tuner::newRewriterFrontendActionFactory(rewriter, Diags);
+    clang::tooling::ClangTool Tool(OptionsParser->getCompilations(), {source});
+    if (Tool.run(frontendAction.get()) != 0) {
+      return {};
+    }
+
+    const auto *RewriteBuf =
+        rewriter.getRewriteBufferFor(rewriter.getSourceMgr().getMainFileID());
+
+    if (!RewriteBuf) {
+      llvm::errs() << "Nothing to tune! compile with clang!\n";
+      return {};
+    }
+
+    SmallString<256> refactoredFileCpp;
+    int refactoredFileFD;
+    llvm::sys::fs::createUniqueFile(source + "_refactored.cpp",
+                                    refactoredFileFD, refactoredFileCpp);
+
+    std::ofstream out(refactoredFileCpp.c_str());
+    out << std::string(RewriteBuf->begin(), RewriteBuf->end());
+    out.close();
+
+    refactoredFiles.push_back(refactoredFileCpp.c_str());
+  }
+
+  return refactoredFiles;
+}
 
 int main(int argc, const char **argv) {
   llvm::InitLLVM X(argc, argv);
@@ -173,201 +282,79 @@ int main(int argc, const char **argv) {
   }
   OptionsParser = &ExpectedParser.get();
 
-  //  clang::tuner::Driver driver;
-  //
-  //  auto x = driver.collectTranslationUnits()
-  //  return 1;
-
-  // This just needs to be some symbol in the binary; C++ doesn't
-  // allow taking the address of ::main however.
-  void *MainAddr = (void *)GetExecutablePath;
-  std::string Path = GetExecutablePath(argv[0], MainAddr);
   IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts = new DiagnosticOptions();
   TextDiagnosticPrinter *DiagClient =
-      new TextDiagnosticPrinter(llvm::errs(), &*DiagOpts);
-
+      new TextDiagnosticPrinter(llvm::errs(), DiagOpts.get());
   IntrusiveRefCntPtr<DiagnosticIDs> DiagID(new DiagnosticIDs());
-  DiagnosticsEngine Diags(DiagID, &*DiagOpts, DiagClient);
-  clang::Rewriter rewriter;
-  clang::tuner::Modules modules;
-  mlir::MLIRContext context;
+  DiagnosticsEngine Diags(DiagID, DiagOpts.get(), DiagClient);
 
-  // Refactoring the original file
-  {
-    auto fronendAction = clang::tuner::newFindAttrStmtsFrontendActionFactory(
-        context, rewriter, Diags, modules,
-        clang::tuner::FindAttrStmtsVisitor::VisitorTy::Refactorer);
-    clang::tooling::ClangTool Tool(OptionsParser->getCompilations(),
-                                   OptionsParser->getSourcePathList());
-    if (Tool.run(fronendAction.get()) != 0) {
-      return 1;
-    }
-  }
+  const auto &sources = OptionsParser->getSourcePathList();
 
-  const auto *RewriteBuf =
-      rewriter.getRewriteBufferFor(rewriter.getSourceMgr().getMainFileID());
+  auto RefactoredFiles = PerformRefactoring(sources, Diags);
 
-  if (!RewriteBuf) {
-    llvm::errs() << "Nothing to tune! compile with clang!\n";
+  if (RefactoredFiles.empty()) {
+    llvm::errs() << "Error: Refactorer didn't produce any files\n";
     return 1;
   }
 
-  const auto *sources = &OptionsParser->getSourcePathList();
+  void *MainAddr = (void *)GetExecutablePath;
+  auto TheDriver = CreateClangDriver(Diags, argv[0], MainAddr);
 
-  SmallString<32> refactoredFileCpp;
-  int refactoredFileFD;
-  llvm::sys::fs::createUniqueFile(sources->at(0) + "_refactored.cpp",
-                                  refactoredFileFD, refactoredFileCpp);
+  auto CLArgs = CreateClangArgs(sources, argv[0], RefactoredFiles[0].c_str());
+  auto Args = getCStrVec(CLArgs);
 
-  std::ofstream out(refactoredFileCpp.c_str());
-  out << std::string(RewriteBuf->begin(), RewriteBuf->end());
-  out.close();
+  llvm::LLVMContext llvmContext;
+  auto [compilation, llvmIRAction] = PerformCompilation(
+      TheDriver, Args, Diags, argv[0], MainAddr, &llvmContext);
 
-  const std::string &bitCodeFileName = sources->at(0) + ".ll";
-
-  const std::string TripleStr = llvm::sys::getProcessTriple();
-  llvm::Triple T(TripleStr);
-
-  ExitOnErr.setBanner("clang tuner");
-
-  Driver TheDriver(Path, T.str(), Diags);
-  TheDriver.setTitle("clang tuner");
-  TheDriver.setCheckInputsExist(false);
-
-  llvm::SmallVector<std::string> CLArgs;
-  auto &compilationDatabase = OptionsParser->getCompilations();
-
-  //  CLArgs.push_back(argv[0]);
-  for (const auto &it : compilationDatabase.getAllCompileCommands()) {
-    // we might need to switch directories here
-
-    for (auto &elm : it.CommandLine) {
-      bool isSource = false;
-      for (const auto &source : *sources) {
-        if (elm == source) {
-          isSource = true;
-        }
-      }
-      if (!isSource)
-        CLArgs.push_back(elm.c_str());
-    }
-
-    CLArgs.push_back(it.Output.c_str());
-  }
-
-  if (CLArgs.empty())
-    CLArgs.push_back(argv[0]);
-
-  // sources is const we need to modify it to pass in temporary files created.
-  std::vector<std::string> *modifiableSources =
-      const_cast<std::vector<std::string> *>(sources);
-
-  modifiableSources->pop_back();
-  modifiableSources->push_back(refactoredFileCpp.c_str());
-
-  for (const auto &it : OptionsParser->getSourcePathList()) {
-    CLArgs.push_back(it.c_str());
-  }
-
-  CLArgs.push_back("-fsyntax-only");
-
-  llvm::SmallVector<const char *> Args(CLArgs.size());
-  for (int i = 0; i < CLArgs.size(); i++) {
-    Args[i] = CLArgs[i].c_str();
-  }
-
-  //  for (const auto &it: Args)
-  //    llvm::errs() << it << "\n";
-
-  std::unique_ptr<Compilation> C(TheDriver.BuildCompilation(Args));
-  if (!C)
+  if (!compilation || !llvmIRAction)
     return 1;
-
-  const driver::JobList &Jobs = C->getJobs();
-  if (Jobs.size() != 1 || !isa<driver::Command>(*Jobs.begin())) {
-    SmallString<256> Msg;
-    llvm::raw_svector_ostream OS(Msg);
-    Jobs.Print(OS, "; ", true);
-    Diags.Report(diag::err_fe_expected_compiler_job) << OS.str();
-    return 1;
-  }
-
-  const driver::Command &Cmd = cast<driver::Command>(*Jobs.begin());
-  if (llvm::StringRef(Cmd.getCreator().getName()) != "clang") {
-    Diags.Report(diag::err_fe_expected_clang_command);
-    return 1;
-  }
-
-  // Initialize a compiler invocation object from the clang (-cc1) arguments.
-  const llvm::opt::ArgStringList &CCArgs = Cmd.getArguments();
-  std::unique_ptr<CompilerInvocation> CI(new CompilerInvocation);
-  CompilerInvocation::CreateFromArgs(*CI, CCArgs, Diags);
-
-  // Show the invocation, with -v.
-  if (CI->getHeaderSearchOpts().Verbose) {
-    llvm::errs() << "clang invocation:\n";
-    Jobs.Print(llvm::errs(), "\n", true);
-    llvm::errs() << "\n";
-  }
-
-  // FIXME: This is copied from cc1_main.cpp; simplify and eliminate.
-
-  // Create a compiler instance to handle the actual work.
-  CompilerInstance Clang;
-  Clang.setInvocation(std::move(CI));
-
-  // Create the compilers actual diagnostics engine.
-  Clang.createDiagnostics();
-  if (!Clang.hasDiagnostics())
-    return 1;
-
-  if (Clang.getHeaderSearchOpts().UseBuiltinIncludes &&
-      Clang.getHeaderSearchOpts().ResourceDir.empty())
-    Clang.getHeaderSearchOpts().ResourceDir =
-        CompilerInvocation::GetResourcesPath(argv[0], MainAddr);
-
-  // Create and execute the frontend to generate an LLVM bitcode module.
-  std::unique_ptr<CodeGenAction> llvmIRAction(new EmitLLVMOnlyAction());
-  if (!Clang.ExecuteAction(*llvmIRAction)) {
-    return 1;
-  }
 
   auto module = llvmIRAction->takeModule();
-  llvm::DataLayout dataLayout(module.get());
-  {
-    auto fronendAction = clang::tuner::newFindAttrStmtsFrontendActionFactory(
-        context, rewriter, Diags, modules,
-        clang::tuner::FindAttrStmtsVisitor::VisitorTy::MLIRCodeGenerator);
+  if (!module) {
+    llvm::errs() << "clang compilation failed\n";
+    return 1;
+  }
 
-    clang::tooling::ClangTool Tool(OptionsParser->getCompilations(),
-                                   OptionsParser->getSourcePathList());
-    if (Tool.run(fronendAction.get()) != 0) {
-      return 1;
-    }
+  if (!SaveDebugSymbols) {
+    llvm::ModuleAnalysisManager llvmAM;
+    llvm::StripSymbolsPass llvmPass;
+    llvmPass.run(*module, llvmAM);
+  }
+
+  llvm::DataLayout dataLayout(module.get());
+  clang::tuner::Modules modules;
+  mlir::MLIRContext mlirContext;
+
+  auto frontendAction = clang::tuner::newMLIRCodeGenFrontendActionFactory(
+      mlirContext, llvmContext, modules, Diags);
+  clang::tooling::ClangTool Tool(OptionsParser->getCompilations(),
+                                 OptionsParser->getSourcePathList());
+  if (Tool.run(frontendAction.get()) != 0) {
+    return 1;
   }
 
   llvm::Linker linker(*module);
   for (auto &it : modules) {
-    auto &toBeLinked = it.getValue().second;
-
-//    toBeLinked->setModuleFlag
-//        (llvm::Module::ModFlagBehavior::ModFlagBehaviorFirstVal, "Debug Info "
-//                                                                 "Version", )
+    auto &toBeLinked = it.getValue();
     toBeLinked->setDataLayout(dataLayout);
     toBeLinked->setTargetTriple(module->getTargetTriple());
     linker.linkInModule(std::move(toBeLinked));
   }
 
-  llvm::errs() << bitCodeFileName << "\n";
   std::error_code bitCodeWriterError;
-  llvm::raw_fd_ostream bitCodeOStream(bitCodeFileName, bitCodeWriterError,
+  llvm::raw_fd_ostream bitCodeOStream(sources.at(0) + ".ll",
+                                      bitCodeWriterError,
                                       llvm::sys::fs::F_None);
   bitCodeOStream << *module;
   bitCodeOStream.flush();
 
   // clean up the files
-  if (!SaveRefactoredSourceFile.getValue())
-    llvm::FileRemover refactoredFileRemover(refactoredFileCpp.c_str());
+  if (!SaveRefactoredSourceFile.getValue()) {
+    for (auto &file : RefactoredFiles) {
+      llvm::FileRemover refactoredFileRemover(file.c_str());
+    }
+  }
 
   return 0;
 }

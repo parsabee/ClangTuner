@@ -18,24 +18,10 @@
 #include "mlir/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/ModuleTranslation.h"
 #include "clang/AST/ASTDumper.h"
-#include "clang/AST/ASTTypeTraits.h"
-#include "clang/AST/StmtVisitor.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
-#include "clang/Tooling/Refactoring/Extract/Extract.h"
-#include "clang/Tooling/Refactoring/RefactoringRuleContext.h"
 #include "llvm/IR/DerivedTypes.h"
 
 namespace clang::tuner {
-
-static bool isATuneAttr(AttributedStmt *AttributedStmt) {
-  const auto attrs = AttributedStmt->getAttrs();
-  for (auto attr : attrs) {
-    if (std::strcmp(attr->getSpelling(), "block_dim") == 0) {
-      return true;
-    }
-  }
-  return false;
-}
 
 static mlir::ModuleOp initializeMlirModule(mlir::OpBuilder &opBuilder) {
   auto theModule = mlir::ModuleOp::create(opBuilder.getUnknownLoc());
@@ -79,66 +65,27 @@ public:
   }
 };
 
-/// Finds all declaration references within a for loop to be passed as the loops
-/// arguments
-/// TODO: exclude the decl refs that their declaration is within the loop
-static void findAttrForLoopArguments(ForStmt *forStmt, ASTContext &context,
-                                     Declarations &inputArgs) {
-  Declarations declRefs, varDecls;
-  DeclCollector declCollector(varDecls, declRefs);
-  declCollector.TraverseForStmt(forStmt);
-
-  for (const auto &it : declRefs) {
-    if (varDecls.find(it.first) == varDecls.end()) {
-      inputArgs[it.first] = it.second;
-    }
-  }
-}
-
-bool FindAttrStmtsVisitor::extractForLoopIntoFunction(
+bool MLIRCodeGenAttrVisitor::VisitAttributedStmt(
     AttributedStmt *attributedStmt) {
 
-  // selecting the nodes in the source range of attributedStmt
-  auto sourceRange = attributedStmt->getSourceRange();
+  // checking if attr is a tune attr
+  for (auto attr : attributedStmt->getAttrs()) {
+    if (isATuneAttr(attr)) {
+      auto forStmt = dyn_cast<ForStmt>(attributedStmt->getSubStmt());
+      if (!forStmt)
+        return false;
 
-  auto selectedNodes =
-      clang::tooling::findSelectedASTNodes(astContext, sourceRange);
-
-  auto codeRange = clang::tooling::CodeRangeASTSelection::create(
-      sourceRange, selectedNodes.getValue());
-
-  if (codeRange.getPointer() == nullptr) {
-    llvm::errs() << "failed to create code range\n";
-    return false;
+      if (auto mlirOpt = dyn_cast<MLIROptAttr>(attr)) {
+        return handleMLIROptAttr(mlirOpt, forStmt);
+      }
+    }
   }
-
-  // creating refactoring rule for extracting the for loop within attributedStmt
-  clang::tooling::RefactoringRuleContext RRC(sourceManager);
-  RRC.setASTContext(astContext);
-
-  auto extractFunc = clang::tooling::ExtractFunction::initiate(
-      RRC, std::move(*codeRange.getPointer()), None);
-
-  if (auto err = extractFunc.takeError()) {
-    llvm::logAllUnhandledErrors(std::move(err), llvm::errs());
-    return false;
-  }
-
-  // refactoring
-  Rewriter rewriter(sourceManager, {});
-  //  ExtractFuncConsumer consumer(rewriter);
-  //  extractFunc->invoke(consumer, RRC);
-
-  auto rewriteBuffer =
-      rewriter.getRewriteBufferFor(sourceManager.getMainFileID());
-  llvm::outs() << std::string(rewriteBuffer->begin(), rewriteBuffer->end());
 
   return true;
 }
 
-bool FindAttrStmtsVisitor::handleMLIROptAttr(AttributedStmt *attributedStmt,
-                                             const MLIROptAttr *mlirOpt,
-                                             ForStmt *forStmt) {
+bool MLIRCodeGenAttrVisitor::handleMLIROptAttr(const MLIROptAttr *mlirOpt,
+                                               ForStmt *forStmt) {
   llvm::SmallVector<StringRef> attrArgs;
 
   for (auto it : mlirOpt->argv()) {
@@ -154,15 +101,15 @@ bool FindAttrStmtsVisitor::handleMLIROptAttr(AttributedStmt *attributedStmt,
 
   auto forloopName = createFunctionName(forStmt, sourceManager);
   auto module = initializeMlirModule(opBuilder);
-  auto llvmCntx = std::make_unique<llvm::LLVMContext>();
   {
-    MLIRCodeGenerator codeGen(forStmt, astContext, module, *llvmCntx, opBuilder,
-                              sourceManager, diags);
+    MLIRCodeGenerator codeGen(forStmt, astContext, module, llvmContext,
+                              opBuilder, sourceManager, diags);
 
     auto llvmModule = codeGen.performLoweringAndOptimizationPipeline(attrArgs);
     if (llvmModule) {
-      auto pair = std::make_pair(std::move(llvmCntx), std::move(llvmModule));
-      modules.insert({forloopName, std::move(pair)});
+      //      auto pair = std::make_pair(std::move(llvmCntx),
+      //      std::move(llvmModule));
+      modules.insert({forloopName, std::move(llvmModule)});
     } else {
       llvm::errs() << "error while compiling with MLIR\n";
       return false;
@@ -172,22 +119,16 @@ bool FindAttrStmtsVisitor::handleMLIROptAttr(AttributedStmt *attributedStmt,
   return true;
 }
 
-bool FindAttrStmtsVisitor::VisitAttributedStmt(AttributedStmt *attributedStmt) {
+bool RewriterAttrVisitor::VisitAttributedStmt(AttributedStmt *attributedStmt) {
 
   // checking if attr is a tune attr
   for (auto attr : attributedStmt->getAttrs()) {
     if (isATuneAttr(attr)) {
-      auto forStmt = dyn_cast<ForStmt>(attributedStmt->getSubStmt());
-      if (!forStmt)
+      if (!isa<ForStmt>(attributedStmt->getSubStmt())) {
         return false;
-
-      if (auto mlirOpt = dyn_cast<MLIROptAttr>(attr)) {
-        switch(visitorTy) {
-        case VisitorTy::MLIRCodeGenerator:
-          return handleMLIROptAttr(attributedStmt, mlirOpt, forStmt);
-        case VisitorTy::Refactorer:
-          loopRefactorer.performExtraction(attributedStmt);
-        }
+      }
+      if (isa<MLIROptAttr>(attr)) {
+        loopRefactorer.performExtraction(attributedStmt);
       }
     }
   }
@@ -195,36 +136,54 @@ bool FindAttrStmtsVisitor::VisitAttributedStmt(AttributedStmt *attributedStmt) {
   return true;
 }
 
-class FindAttrStmtsFrontendActionFactory
-    : public tooling::FrontendActionFactory {
-  mlir::MLIRContext &context;
-  Rewriter &rewriter;
-  DiagnosticsEngine &diags;
-  Modules &modules;
-  FindAttrStmtsVisitor::VisitorTy visitorTy;
+std::unique_ptr<tooling::FrontendActionFactory>
+newRewriterFrontendActionFactory(Rewriter &rewriter, DiagnosticsEngine &diags) {
+  class RewriterFrontendActionFactory : public tooling::FrontendActionFactory {
+    Rewriter &rewriter;
+    DiagnosticsEngine &diags;
 
-public:
-  FindAttrStmtsFrontendActionFactory(
-      mlir::MLIRContext &context, Rewriter &rewriter,
-      DiagnosticsEngine &diags, Modules &modules,
-      FindAttrStmtsVisitor::VisitorTy visitorTy)
-      : context(context), rewriter(rewriter), diags(diags), modules(modules),
-        visitorTy(visitorTy) {}
+  public:
+    RewriterFrontendActionFactory(Rewriter &rewriter, DiagnosticsEngine &diags)
+        : rewriter(rewriter), diags(diags) {}
 
-  std::unique_ptr<FrontendAction> create() override {
-    return std::make_unique<AttrForLoopFinder>(context, rewriter, diags,
-                                               modules, visitorTy);
-  }
-};
+    std::unique_ptr<FrontendAction> create() override {
+      return std::make_unique<RewriterFrontendAction>(rewriter, diags);
+    }
+  };
+
+  return std::unique_ptr<RewriterFrontendActionFactory>(
+      new RewriterFrontendActionFactory(rewriter, diags));
+}
 
 std::unique_ptr<tooling::FrontendActionFactory>
-newFindAttrStmtsFrontendActionFactory(
-    mlir::MLIRContext &context, Rewriter &rewriter, DiagnosticsEngine &diags,
-    Modules &modules, FindAttrStmtsVisitor::VisitorTy visitorTy) {
+newMLIRCodeGenFrontendActionFactory(mlir::MLIRContext &mlirContext,
+                                    llvm::LLVMContext &llvmContext,
+                                    Modules &modules,
+                                    DiagnosticsEngine &diags) {
 
-  return std::unique_ptr<FindAttrStmtsFrontendActionFactory>(
-      new FindAttrStmtsFrontendActionFactory(context, rewriter, diags, modules,
-                                             visitorTy));
+  class MLIRCodeGenFrontendActionFactory
+      : public tooling::FrontendActionFactory {
+    mlir::MLIRContext &mlirContext;
+    llvm::LLVMContext &llvmContext;
+    Modules &modules;
+    DiagnosticsEngine &diags;
+
+  public:
+    MLIRCodeGenFrontendActionFactory(mlir::MLIRContext &mlirContext,
+                                     llvm::LLVMContext &llvmContext,
+                                     Modules &modules, DiagnosticsEngine &diags)
+        : mlirContext(mlirContext), llvmContext(llvmContext), modules(modules),
+          diags(diags) {}
+
+    std::unique_ptr<FrontendAction> create() override {
+      return std::make_unique<MLIRCodeGenFrontendAction>(
+          mlirContext, llvmContext, diags, modules);
+    }
+  };
+
+  return std::unique_ptr<MLIRCodeGenFrontendActionFactory>(
+      new MLIRCodeGenFrontendActionFactory(mlirContext, llvmContext, modules,
+                                           diags));
 }
 
 } // namespace clang::tuner
