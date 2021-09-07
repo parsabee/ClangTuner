@@ -7,12 +7,16 @@
 namespace clang {
 namespace tuner {
 
-static bool isATuneAttr(const char *name) {
-  return (std::strcmp(name, "parallel_for::mlir_opt") == 0);
+static bool isAnMLIRAttr(const char *name) {
+  return (std::strcmp(name, "mlir::forloop") == 0) ||
+      (std::strcmp(name, "mlir::parallel") == 0) ||
+      (std::strcmp(name, "mlir::opt") == 0) ||
+      (std::strcmp(name, "mlir::collapse") == 0) ||
+      (std::strcmp(name, "mlir::omp") == 0);
 }
 
-bool isATuneAttr(const Attr *attr) {
-  return (isATuneAttr(attr->getNormalizedFullName().c_str()));
+bool isAnMLIRAttr(const Attr *attr) {
+  return (isAnMLIRAttr(attr->getNormalizedFullName().c_str()));
 }
 
 } // namespace tuner

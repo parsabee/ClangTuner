@@ -5,6 +5,7 @@
 #ifndef TUNER_CODEGEN_H
 #define TUNER_CODEGEN_H
 
+#include "LockableObject.h"
 #include "MLIRTypeGenerator.h"
 
 #include "../../clang/lib/CodeGen/CodeGenModule.h"
@@ -22,6 +23,9 @@
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+
+#include <condition_variable>
+#include <mutex>
 
 namespace clang::tuner {
 
@@ -41,7 +45,7 @@ public:
 
 class MLIRCodeGenerator : public StmtVisitor<MLIRCodeGenerator, mlir::Value> {
   SourceManager &sourceManager;
-  llvm::LLVMContext &llvmContext;
+  Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext;
   llvm::Module llvmModule;
   mlir::MLIRContext *mlirContext;
   mlir::ModuleOp &moduleOp;
@@ -79,16 +83,11 @@ class MLIRCodeGenerator : public StmtVisitor<MLIRCodeGenerator, mlir::Value> {
   mlir::Value createConstantIndex(unsigned int index);
 
 public:
-  MLIRCodeGenerator(ForStmt *forStmt, ASTContext &context,
-                    mlir::ModuleOp &moduleOp, llvm::LLVMContext &llvmContext,
-                    mlir::OpBuilder &opBuilder, SourceManager &sourceManager,
-                    DiagnosticsEngine &diags)
-      : sourceManager(sourceManager), llvmContext(llvmContext),
-        llvmModule("llvm_mod", llvmContext),
-        mlirContext(moduleOp->getContext()), moduleOp(moduleOp),
-        opBuilder(opBuilder), astContext(context), forStmt(forStmt),
-        CGModule(context, {}, {}, {}, llvmModule, diags),
-        typeGen(moduleOp, CGModule.getTypes()) {}
+  MLIRCodeGenerator(
+      ForStmt *forStmt, ASTContext &context, mlir::ModuleOp &moduleOp,
+      Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext,
+      mlir::OpBuilder &opBuilder, SourceManager &sourceManager,
+      DiagnosticsEngine &diags);
 
   mlir::Value VisitImplicitCastExpr(ImplicitCastExpr *);
 
@@ -108,10 +107,26 @@ public:
 
   mlir::Value VisitIntegerLiteral(IntegerLiteral *);
 
-  std::unique_ptr<llvm::Module>
+  std::unique_ptr<mlir::ModuleOp>
   performLoweringAndOptimizationPipeline(llvm::SmallVector<StringRef> &);
 
   bool lowerToMLIR();
+
+  static std::unique_ptr<mlir::ModuleOp> runOpt(mlir::ModuleOp *,
+                                                llvm::SmallVector<StringRef> &);
+
+  static bool runParallelizingPass(mlir::ModuleOp &, mlir::MLIRContext *);
+
+  static bool lowerToLLVMDialect(mlir::ModuleOp &moduleOp,
+                                 mlir::MLIRContext *mlirContext);
+
+  /// Converts mlir llvm dialect to llvm ir.
+  /// LLVMContext is not thread safe, so in threaded settings we need to pass
+  /// a condition variable and mutex to this function
+  static std::unique_ptr<llvm::Module>
+  convertToLLVMIR(mlir::ModuleOp &moduleOp, mlir::MLIRContext *mlirContext,
+                  llvm::LLVMContext &llvmContext, std::condition_variable *cond,
+                  std::mutex *mtx);
 };
 } // namespace clang::tuner
 

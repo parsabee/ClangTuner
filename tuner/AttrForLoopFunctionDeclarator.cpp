@@ -79,7 +79,6 @@ public:
 class FindLocalDeclRefs : public RecursiveASTVisitor<FindLocalDeclRefs> {
   Decls &decls;
   Decls localDecls;
-  ASTContext &context;
   ForStmt *forStmt;
 
   void findLocalDecls() {
@@ -89,7 +88,7 @@ class FindLocalDeclRefs : public RecursiveASTVisitor<FindLocalDeclRefs> {
 
 public:
   FindLocalDeclRefs(Decls &inputArgs, ASTContext &context, ForStmt *forStmt)
-  : decls(inputArgs), context(context), forStmt(forStmt) {
+  : decls(inputArgs), forStmt(forStmt) {
     findLocalDecls();
   }
 

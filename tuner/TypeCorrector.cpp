@@ -18,9 +18,9 @@ static const std::string getBuiltinType(const Type *type) {
 
 static void findShapeRecursively(QualType *qualType,
                                  SmallVector<int64_t> &shape) {
-  auto type = qualType->getTypePtr();
-  if (auto array = dyn_cast<ArrayType>(type)) {
-    if (auto constantArray = dyn_cast<ConstantArrayType>(type)) {
+  const auto *type = qualType->getTypePtr();
+  if (const auto *array = dyn_cast<ArrayType>(type)) {
+    if (const auto *constantArray = dyn_cast<ConstantArrayType>(type)) {
       const llvm::APInt &apInt = constantArray->getSize();
       uint64_t size = *(constantArray->getSize().getRawData());
       shape.push_back(static_cast<int64_t>(size));
@@ -33,7 +33,7 @@ static void findShapeRecursively(QualType *qualType,
 }
 
 static void findArrayShape(QualType *qualType, SmallVector<int64_t> &shape) {
-  auto type = qualType->getTypePtr();
+  const auto *type = qualType->getTypePtr();
   if (isa<ArrayType>(type)) {
     findShapeRecursively(qualType, shape);
   }
@@ -66,7 +66,7 @@ void TypeCorrector::insertCorrection(
 
 llvm::SmallVector<std::string> TypeCorrector::getExpandedTypes(QualType type) {
   llvm::SmallVector<std::string> args;
-  if (auto decayedType = dyn_cast<clang::DecayedType>(type)) {
+  if (const auto *decayedType = dyn_cast<clang::DecayedType>(type)) {
     type = decayedType->getOriginalType();
   }
 
@@ -89,14 +89,14 @@ llvm::SmallVector<std::string> TypeCorrector::getExpandedTypes(QualType type) {
     args.push_back(st);
   }
 
-  return std::move(args);
+  return args;
 }
 
 llvm::SmallVector<std::string>
 TypeCorrector::getExpandedArgs(const DeclRefExpr *decl) {
   llvm::SmallVector<std::string> args;
   auto type = decl->getDecl()->getType();
-  if (auto decayedType = dyn_cast<clang::DecayedType>(type)) {
+  if (const auto *decayedType = dyn_cast<clang::DecayedType>(type)) {
     type = decayedType->getOriginalType();
   }
   if (type.getTypePtr()->isArrayType()) {
@@ -108,7 +108,7 @@ TypeCorrector::getExpandedArgs(const DeclRefExpr *decl) {
 
     args.push_back("0"); // offset
 
-    for (auto s: shape) {
+    for (auto s : shape) {
       args.push_back(std::to_string(s)); // shape
     }
 
@@ -121,7 +121,7 @@ TypeCorrector::getExpandedArgs(const DeclRefExpr *decl) {
     args.push_back(decl->getDecl()->getNameAsString());
   }
 
-  return std::move(args);
+  return args;
 }
 
 } // namespace tuner

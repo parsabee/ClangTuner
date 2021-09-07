@@ -2,68 +2,36 @@
 // Created by parsa on 5/14/21.
 //
 
-#include <fstream>
-
-#include "AttrForLoopRefactorer.h"
 #include "MLIRCodeGenerator.h"
+#include "AttrForLoopFunctionDeclarator.h"
+#include "AttrForLoopRefactorer.h"
+#include "CommandLineOpts.h"
+#include "IOUtils.h"
 #include "OpenMPConfigurer.h"
-#include "OptimizationDriver.h"
 #include "ParallelizingPass.h"
 
-#include "mlir/InitAllDialects.h"
-#include "mlir/InitAllPasses.h"
-
-#include "AttrForLoopFunctionDeclarator.h"
-#include "ClangTune/Dialect.h"
-#include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
 #include "mlir/Conversion/SCFToOpenMP/SCFToOpenMP.h"
 #include "mlir/Conversion/SCFToStandard/SCFToStandard.h"
 #include "mlir/Conversion/StandardToLLVM/ConvertStandardToLLVMPass.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/InitAllDialects.h"
+#include "mlir/InitAllPasses.h"
 #include "mlir/Parser.h"
 #include "mlir/Support/MlirOptMain.h"
-#include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Program.h"
-#include "llvm/Transforms/IPO/StripSymbols.h"
 
-#include "CommandLineOpts.h"
+#include <mutex>
 
 namespace clang::tuner {
-
-/// Writes the module to file with filename
-/// It is generic because it should work on llvm and mlir modules
-template <typename Module>
-bool writeModuleToFile(const std::string &name,
-                       llvm::SmallString<256> &fileName, Module &module) {
-  // Delete the file if it already exist and create a new one
-  if (llvm::sys::fs::exists(name)) {
-    llvm::FileRemover fileRemover(name.c_str());
-  }
-
-  int MLIROptimizedFileFD;
-  llvm::sys::fs::createUniqueFile(name, MLIROptimizedFileFD, fileName);
-
-  std::error_code EC;
-  llvm::raw_fd_ostream rawStream(fileName, EC, llvm::sys::fs::F_None);
-  if (rawStream.has_error()) {
-    return false;
-  }
-  rawStream << module;
-  rawStream.flush();
-  rawStream.close();
-  return true;
-}
 
 using Declarations = std::map<llvm::StringRef, const Expr *>;
 
@@ -99,39 +67,6 @@ void MLIRCodeGenerator::declare(llvm::StringRef var, mlir::Value value) {
   scopedHashTable.insert(var, value);
 }
 
-//
-// void MLIRCodeGenerator::createArrayIndices(ArraySubscriptExpr
-// *arraySubscriptExpr) {
-//  llvm::SmallVector<mlir::Value> indices;
-//
-//  auto generateIdx = [&](clang::Expr *expr) -> mlir::Value {
-//    Expr::EvalResult res;
-//    if (expr->EvaluateAsConstantExpr(res, cntx)) {
-//      auto idx = res.Val.getInt().getExtValue();
-//      return opBuilder.create<mlir::ConstantIndexOp>(UNKNOWN_LOC, idx);
-//    } else if ()
-//  };
-//
-//
-//  clang::Expr *base = arraySubscriptExpr->getBase();
-//
-//  // An array subscript can be multi-dimensional
-//  // in that case we need to iteratively get the base of the array subscript
-//  to get to its identifier while (true) {
-//    if (auto *arrSub = dyn_cast<ArraySubscriptExpr>(base)) {
-//      base = arrSub->getBase();
-//    } else if (auto *implCast = dyn_cast<ImplicitCastExpr>(base)) {
-//      base = implCast->getSubExpr();
-//    } else {
-//      break;
-//    }
-//  }
-//
-//  if (auto *decl = dyn_cast<DeclRefExpr>(base)) {
-//    return decl->getNameInfo().getAsString();
-//  }
-//}
-
 mlir::Value MLIRCodeGenerator::createConstantIndex(unsigned int index) {
   auto retval = indexConstants.lookup(index);
   if (retval != nullptr)
@@ -142,7 +77,7 @@ mlir::Value MLIRCodeGenerator::createConstantIndex(unsigned int index) {
 }
 
 mlir::Value MLIRCodeGenerator::handleVarDecl(VarDecl *varDecl) {
-  mlir::MemRefType memrefType = typeGen.getType(varDecl);
+  mlir::MemRefType memrefType = typeGen.getMemRefType(varDecl);
   assert(memrefType && "type must be valid at this point");
 
   mlir::Value allocation =
@@ -316,10 +251,6 @@ mlir::Value MLIRCodeGenerator::forLoopHandler(ForStmt *theForStmt,
   return nullptr;
 }
 
-// mlir::Value MLIRCodeGenerator::VisitParallelForStmt(ForStmt *forStmt) {
-//  return forLoopHandler(forStmt, true);
-//}
-
 mlir::Value MLIRCodeGenerator::VisitForStmt(ForStmt *forStmt) {
   return forLoopHandler(forStmt, false);
 }
@@ -366,10 +297,13 @@ mlir::Value MLIRCodeGenerator::VisitArraySubscriptExpr(
 /// This function is a generic (all binop operations) handler for int and float
 /// binops, F1 is a callback for operation involving ints, F2 callback for
 /// operations with floats
+/// the 'requires' clause makes sure F1 and F2 are functions/functors/lambdas
+/// (invocable)
 template <typename F1, typename F2>
-static mlir::Value genericBinOpHandler(
-    mlir::Value &lhs, mlir::Value &rhs, F1 &&ifInt,
-    F2 &&ifFloat) { // pass by rvalue to restrict F1 and F2 to closures
+requires std::is_invocable<F1>::value &&
+    std::is_invocable<F2>::value static mlir::Value
+    genericBinOpHandler(mlir::Value &lhs, mlir::Value &rhs, F1 &&ifInt,
+                        F2 &&ifFloat) {
   auto lhsT = lhs.getType();
   auto rhsT = rhs.getType();
   if ((lhsT.isSignedInteger() || lhsT.isUnsignedInteger()) &&
@@ -463,7 +397,7 @@ mlir::Value MLIRCodeGenerator::VisitBinaryOperator(BinaryOperator *binOp) {
 
   auto lhs = Visit(binOp->getLHS());
   auto rhs = Visit(binOp->getRHS());
-  assert(lhs != nullptr && rhs != nullptr);
+  assert(lhs && rhs);
   switch (binOp->getOpcode()) {
   case BO_Add:
     return handleAddition(lhs, rhs);
@@ -484,12 +418,6 @@ mlir::Value MLIRCodeGenerator::VisitDeclRefExpr(DeclRefExpr *declRef) {
   assert(val && "declRefExpr should be in the symbol table at this point, "
                 "but it's not");
   return val;
-  //  mlir::MemRefType memrefType = typeGen.VisitDeclRefExpr(declRef);
-  //  //  auto memref = opBuilder.create<mlir::>
-  //  auto loadVal =
-  //      opBuilder.create<mlir::memref::LoadOp>(UNKNOWN_LOC, memrefType,
-  //      createConstantIndex(0));
-  //  return loadVal;
 }
 
 mlir::Value
@@ -526,9 +454,10 @@ const std::vector<StringRef> &ForLoopArgs::getArgNames() const {
   return argNames;
 }
 
-static std::unique_ptr<mlir::ModuleOp>
-runOpt(mlir::ModuleOp *module, mlir::MLIRContext *context,
-       llvm::SmallVector<StringRef> &optArgs) {
+std::unique_ptr<mlir::ModuleOp>
+MLIRCodeGenerator::runOpt(mlir::ModuleOp *module,
+                          llvm::SmallVector<StringRef> &optArgs) {
+  auto *context = module->getContext();
   int tempStoredFileFD;
   SmallString<32> tempStoredFile;
   SmallString<256> MLIROptimizedFile;
@@ -537,6 +466,8 @@ runOpt(mlir::ModuleOp *module, mlir::MLIRContext *context,
   int MLIROptimizedFileFD;
   const auto *sources = &OptionsParser->getSourcePathList();
   const auto name = sources->at(0) + "_for_loops_opt.mlir";
+
+  // Remove the temporary file if it already exists
   if (llvm::sys::fs::exists(name)) {
     llvm::FileRemover fileRemover(name.c_str());
   }
@@ -547,6 +478,7 @@ runOpt(mlir::ModuleOp *module, mlir::MLIRContext *context,
   if (rawStream.has_error()) {
     return nullptr;
   }
+
   rawStream << *module;
   rawStream.flush();
   rawStream.close();
@@ -561,6 +493,7 @@ runOpt(mlir::ModuleOp *module, mlir::MLIRContext *context,
   auto pathOrErr = llvm::sys::findProgramByName("mlir-opt");
   if (!pathOrErr)
     return nullptr;
+
   const std::string &path = *pathOrErr;
   int RunResult = llvm::sys::ExecuteAndWait(path, optArgs, None, Redirects);
   if (RunResult != 0)
@@ -583,6 +516,69 @@ runOpt(mlir::ModuleOp *module, mlir::MLIRContext *context,
   return std::make_unique<mlir::ModuleOp>(optimizedModule.release());
 }
 
+// std::unique_ptr<mlir::ModuleOp>
+// runOpt(mlir::ModuleOp *module, mlir::MLIRContext *context,
+//       llvm::SmallVector<StringRef> &optArgs) {
+//  int tempStoredFileFD;
+//  SmallString<32> tempStoredFile;
+//  SmallString<256> MLIROptimizedFile;
+//  llvm::sys::fs::createTemporaryFile("tmp-mlir-file", "mlir",
+//  tempStoredFileFD,
+//                                     tempStoredFile);
+//  int MLIROptimizedFileFD;
+//  const auto *sources = &OptionsParser->getSourcePathList();
+//  const auto name = sources->at(0) + "_for_loops_opt.mlir";
+//
+//  // Remove the temporary file if it already exists
+//  if (llvm::sys::fs::exists(name)) {
+//    llvm::FileRemover fileRemover(name.c_str());
+//  }
+//  llvm::sys::fs::createUniqueFile(name, MLIROptimizedFileFD,
+//  MLIROptimizedFile);
+//
+//  std::error_code EC;
+//  llvm::raw_fd_ostream rawStream(tempStoredFile, EC, llvm::sys::fs::F_None);
+//  if (rawStream.has_error()) {
+//    return nullptr;
+//  }
+//
+//  rawStream << *module;
+//  rawStream.flush();
+//  rawStream.close();
+//
+//  llvm::FileRemover tempStoredFileRemover(tempStoredFile.c_str());
+//  Optional<StringRef> Redirects[] = {StringRef(MLIROptimizedFile),
+//                                     StringRef(MLIROptimizedFile),
+//                                     StringRef(MLIROptimizedFile)};
+//
+//  optArgs.insert(optArgs.begin(), "mlir-opt");
+//  optArgs.push_back(tempStoredFile);
+//  auto pathOrErr = llvm::sys::findProgramByName("mlir-opt");
+//  if (!pathOrErr)
+//    return nullptr;
+//
+//  const std::string &path = *pathOrErr;
+//  int RunResult = llvm::sys::ExecuteAndWait(path, optArgs, None, Redirects);
+//  if (RunResult != 0)
+//    return nullptr;
+//
+//  auto OutputBuf = llvm::MemoryBuffer::getFile(MLIROptimizedFile.c_str());
+//  if (!OutputBuf)
+//    return nullptr;
+//
+//  llvm::SourceMgr sourceMgr;
+//  sourceMgr.AddNewSourceBuffer(std::move(OutputBuf.get()), llvm::SMLoc());
+//
+//  auto optimizedModule = mlir::parseSourceFile(sourceMgr, context);
+//
+//  // clean-up
+//  if (!SaveOptimizedMLIRFile.getValue()) {
+//    llvm::FileRemover tempResultFileRemover(MLIROptimizedFile.c_str());
+//  }
+//
+//  return std::make_unique<mlir::ModuleOp>(optimizedModule.release());
+//}
+
 bool MLIRCodeGenerator::lowerToMLIR() {
   /// First creating a function enclosing the loop,
   /// this function will take as argument the DeclRefExprs found inside the loop
@@ -592,7 +588,7 @@ bool MLIRCodeGenerator::lowerToMLIR() {
 
   /// creating the function
   for (auto pair : loopInputs) {
-    auto type = typeGen.getType(pair.second);
+    auto type = typeGen.getMemRefType(pair.second);
     assert(type && "type must not be null");
     if (type.getRank() == 0)
       loopArgs.append(type.getElementType(), pair.first);
@@ -624,6 +620,31 @@ bool MLIRCodeGenerator::lowerToMLIR() {
     return false;
   }
 
+  //  // Converting top level for loop to parallel loop
+  //  mlir::PassManager pm(mlirContext);
+  //  mlir::OpPassManager &nestedModulePM = pm.nest<mlir::FuncOp>();
+  //  nestedModulePM.addPass(std::make_unique<clang::tuner::ParallelizingPass>());
+  //  if (mlir::failed(pm.run(moduleOp))) {
+  //    moduleOp->emitError("failed to parallelize module");
+  //#ifdef DEBUG
+  //    moduleOp->dump();
+  //#endif
+  //    return false;
+  //  }
+
+  if (SaveInitialMLIRFile.getValue()) {
+    SmallString<256> loopMLIRFile;
+    const auto *sources = &OptionsParser->getSourcePathList();
+    if (!writeModuleToFile(sources->at(0) + "_for_loops.mlir", loopMLIRFile,
+                           moduleOp)) {
+      llvm::errs() << "failed to write the generated mlir module to file\n";
+    }
+  }
+  return true;
+}
+
+bool MLIRCodeGenerator::runParallelizingPass(mlir::ModuleOp &moduleOp,
+                                             mlir::MLIRContext *mlirContext) {
   // Converting top level for loop to parallel loop
   mlir::PassManager pm(mlirContext);
   mlir::OpPassManager &nestedModulePM = pm.nest<mlir::FuncOp>();
@@ -639,26 +660,27 @@ bool MLIRCodeGenerator::lowerToMLIR() {
   if (SaveInitialMLIRFile.getValue()) {
     SmallString<256> loopMLIRFile;
     const auto *sources = &OptionsParser->getSourcePathList();
-    if (!writeModuleToFile(sources->at(0) + "_for_loops.mlir", loopMLIRFile,
-                           moduleOp)) {
+    if (!writeModuleToFile(sources->at(0) + "_parallel_for_loops.mlir",
+                           loopMLIRFile, moduleOp)) {
       llvm::errs() << "failed to write the generated mlir module to file\n";
     }
   }
   return true;
 }
 
-static std::unique_ptr<llvm::Module>
-convertToLLVMIR(mlir::ModuleOp &moduleOp, mlir::MLIRContext *mlirContext,
-                llvm::LLVMContext &llvmContext) {
+bool MLIRCodeGenerator::lowerToLLVMDialect(mlir::ModuleOp &moduleOp,
+                                           mlir::MLIRContext *mlirContext) {
+
   mlir::registerAllPasses();
   mlir::DialectRegistry registry;
   mlir::registerAllDialects(registry);
 
-  // First lower to llvm dialect (if not already in that dialect)
   mlir::PassManager mlirPM(mlirContext);
 
+  // converts SCF ops to Standard ops
   mlirPM.addPass(mlir::createLowerToCFGPass());
 
+  // converts standard to LLVM
   mlirPM.addPass(mlir::createLowerToLLVMPass());
 
   if (mlir::failed(mlirPM.run(moduleOp))) {
@@ -666,7 +688,7 @@ convertToLLVMIR(mlir::ModuleOp &moduleOp, mlir::MLIRContext *mlirContext,
 #ifdef DEBUG
     moduleOp->dump();
 #endif
-    return nullptr;
+    return false;
   }
 
   if (SaveLLVMDialectMLIRFile.getValue()) {
@@ -676,115 +698,47 @@ convertToLLVMIR(mlir::ModuleOp &moduleOp, mlir::MLIRContext *mlirContext,
                            moduleOp)) {
       llvm::errs() << "failed to write the generated mlir (llvm dialect) "
                       "module to file\n";
+      return false;
     }
   }
 
-  mlir::registerLLVMDialectTranslation(*moduleOp->getContext());
-  auto newLLVMModule = mlir::translateModuleToLLVMIR(moduleOp, llvmContext);
-  if (!newLLVMModule) {
-    llvm::errs() << "failed to emit LLVM IR\n";
-    return nullptr;
-  }
-
-  // If debug symbols are not required, this llvm pass removes them
-  if (!SaveDebugSymbols) {
-    llvm::ModuleAnalysisManager llvmAM;
-    llvm::StripSymbolsPass llvmPass;
-    llvmPass.run(*newLLVMModule, llvmAM);
-  }
-
-  if (SaveLLVMModule.getValue()) {
-    SmallString<256> fileName;
-    const auto &sources = OptionsParser->getSourcePathList();
-    if (!writeModuleToFile<llvm::Module>(sources.at(0) + "_for_loops.ll",
-                                         fileName, *newLLVMModule))
-      llvm::errs() << "failed to write the generated llvm "
-                      "module to file\n";
-  }
-
-  return newLLVMModule;
+  return true;
 }
 
-std::unique_ptr<llvm::Module>
+std::unique_ptr<mlir::ModuleOp>
 MLIRCodeGenerator::performLoweringAndOptimizationPipeline(
     llvm::SmallVector<StringRef> &optArgs) {
 
-  if (!lowerToMLIR())
-    return nullptr;
-
-  auto optimized = runOpt(&moduleOp, mlirContext, optArgs);
-  if (!optimized)
-    return nullptr;
-
-  auto module = convertToLLVMIR(*optimized, mlirContext, llvmContext);
-
-  return module;
-
-  /// First creating a function enclosing the loop,
-  /// this function will take as argument the DeclRefExprs found inside the loop
-  utils::Decls loopInputs;
-  auto forS = const_cast<ForStmt *>(forStmt);
-  utils::findLoopInputs(forS, astContext, loopInputs);
-
-  /// creating the function
-  for (auto pair : loopInputs) {
-    loopArgs.append(typeGen.getType(pair.second), pair.first);
-  }
-
-  auto funcType = opBuilder.getFunctionType(loopArgs.getArgTypes(), llvm::None);
-  llvm::ScopedHashTableScope<StringRef, mlir::Value> scope(scopedHashTable);
-
-  /// TODO find a better name (mangled) for the function
-  auto funcName =
-      createFunctionName(const_cast<ForStmt *>(forStmt), sourceManager);
-
-  auto funcOp = opBuilder.create<mlir::FuncOp>(UNKNOWN_LOC, funcName, funcType);
-  auto &entryBlock = *funcOp.addEntryBlock();
-  for (auto it : llvm::zip(loopArgs.getArgNames(), entryBlock.getArguments())) {
-    declare(std::get<0>(it), std::get<1>(it));
-  }
-  opBuilder.setInsertionPointToEnd(&entryBlock);
-
-  (void)Visit(forS);
-
-  moduleOp.push_back(funcOp);
-  opBuilder.setInsertionPointToEnd(&entryBlock);
-  opBuilder.create<mlir::ReturnOp>(UNKNOWN_LOC);
-  if (mlir::failed(mlir::verify(moduleOp))) {
-    moduleOp.emitError("module verification error");
-    return nullptr;
-  }
-
-  mlir::registerAllPasses();
-  mlir::DialectRegistry registry;
-  mlir::registerAllDialects(registry);
-  SmallString<32> tempMLIRModule;
-
-  auto newModule = runOpt(&moduleOp, this->mlirContext, optArgs);
-
-  mlir::PassManager pm(mlirContext);
-  mlir::OpPassManager &nestedModulePM = pm.nest<mlir::FuncOp>();
-  nestedModulePM.addPass(mlir::createConvertSCFToOpenMPPass());
-  nestedModulePM.addPass(std::make_unique<ConfigureOpenMPPass>(opBuilder));
-  pm.addPass(mlir::createLowerToCFGPass());
-  pm.addPass(mlir::createConvertOpenMPToLLVMPass());
-  if (mlir::failed(pm.run(moduleOp))) {
-    moduleOp->emitError("failed to lower module");
-#ifdef DEBUG
-    moduleOp->dump();
-#endif
-    return nullptr;
-  }
-
-  pm.addPass(mlir::createLowerToLLVMPass());
-
-  mlir::registerLLVMDialectTranslation(*moduleOp->getContext());
-  auto newLLVMModule = mlir::translateModuleToLLVMIR(moduleOp, llvmContext);
-  if (!newLLVMModule) {
-    llvm::errs() << "failed to emit LLVM IR\n";
-    return nullptr;
-  }
-  return newLLVMModule;
+  //  if (!lowerToMLIR())
+  //    return nullptr;
+  //
+  //  auto optimized = runOpt(&moduleOp, mlirContext, optArgs);
+  //  if (!optimized)
+  //    return nullptr;
+  //
+  //  if (!lowerToLLVMDialect(*optimized))
+  //    return nullptr;
+  //
+  //  return optimized;
 }
+
+static llvm::Module
+createLLVMModule(Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext) {
+  Locked locked(lockableLLVMContext);
+  auto &cntx = locked.getObject();
+  return llvm::Module("llvm_mod", cntx);
+}
+
+MLIRCodeGenerator::MLIRCodeGenerator(
+    ForStmt *forStmt, ASTContext &context, mlir::ModuleOp &moduleOp,
+    Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext,
+    mlir::OpBuilder &opBuilder, SourceManager &sourceManager,
+    DiagnosticsEngine &diags)
+    : sourceManager(sourceManager), lockableLLVMContext(lockableLLVMContext),
+      llvmModule(createLLVMModule(lockableLLVMContext)),
+      mlirContext(moduleOp->getContext()), moduleOp(moduleOp),
+      opBuilder(opBuilder), astContext(context), forStmt(forStmt),
+      CGModule(context, {}, {}, {}, llvmModule, diags),
+      typeGen(moduleOp, CGModule.getTypes()) {}
 
 } // namespace clang::tuner

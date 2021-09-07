@@ -5,8 +5,6 @@
 #include "SemaCheck.h"
 #include "TypeCorrector.h"
 
-#include "clang/Tooling/Refactoring/ASTSelection.h"
-
 #include "ClangTune/Dialect.h"
 #include "MLIRCodeGenerator.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -23,23 +21,31 @@
 
 namespace clang::tuner {
 
-static mlir::ModuleOp initializeMlirModule(mlir::OpBuilder &opBuilder) {
+/// Constructs the moduleOp, mlirContext, and opBuilder
+/// Loads builtin dialects
+static std::tuple<std::unique_ptr<mlir::ModuleOp>,
+                  std::unique_ptr<mlir::MLIRContext>, mlir::OpBuilder>
+initializeMlirModule() {
+
+  auto mlirContext = std::make_unique<mlir::MLIRContext>();
+  mlir::OpBuilder opBuilder(mlirContext.get());
   auto theModule = mlir::ModuleOp::create(opBuilder.getUnknownLoc());
 
+  // Loading the necessary dialects
 #define LOAD_DIALECT(DIALECT)                                                  \
   theModule->getContext()->getOrLoadDialect<DIALECT>()
 
-  //  LOAD_DIALECT(mlir::clang_tune::ClangTuneDialect);
   LOAD_DIALECT(mlir::AffineDialect);
   LOAD_DIALECT(mlir::memref::MemRefDialect);
   LOAD_DIALECT(mlir::omp::OpenMPDialect);
   LOAD_DIALECT(mlir::LLVM::LLVMDialect);
   LOAD_DIALECT(mlir::scf::SCFDialect);
   LOAD_DIALECT(mlir::StandardOpsDialect);
-  mlir::registerOpenMPDialectTranslation(*theModule->getContext());
-  //  theModule->getContext()->getOrLoadDialect<mlir::omp::OpenMPDialect>();
+
 #undef LOAD_DIALECT
-  return theModule;
+  mlir::registerOpenMPDialectTranslation(*theModule->getContext());
+  return {std::make_unique<mlir::ModuleOp>(theModule), std::move(mlirContext),
+          std::move(opBuilder)};
 }
 
 using namespace ast_matchers;
@@ -68,15 +74,55 @@ public:
 bool MLIRCodeGenAttrVisitor::VisitAttributedStmt(
     AttributedStmt *attributedStmt) {
 
+  bool hasMLIRAttr = false;
   // checking if attr is a tune attr
   for (auto attr : attributedStmt->getAttrs()) {
-    if (isATuneAttr(attr)) {
-      auto forStmt = dyn_cast<ForStmt>(attributedStmt->getSubStmt());
-      if (!forStmt)
-        return false;
+    if (isAnMLIRAttr(attr)) {
+      hasMLIRAttr = true;
+    }
+  }
 
-      if (auto mlirOpt = dyn_cast<MLIROptAttr>(attr)) {
-        return handleMLIROptAttr(mlirOpt, forStmt);
+  if (hasMLIRAttr) {
+    auto forStmt = dyn_cast<ForStmt>(attributedStmt->getSubStmt());
+    if (!forStmt)
+      return false;
+
+    auto &&[moduleOp, mlirContext, opBuilder] = initializeMlirModule();
+
+    // This generates mlir code for the for loop
+    if (handleMLIRAttr(forStmt, *moduleOp, opBuilder)) {
+
+      // Handling other mlir attributes
+      for (auto attr : attributedStmt->getAttrs()) {
+
+        if (const auto *mlirOpt = dyn_cast<MLIROptAttr>(attr)) {
+          if (auto optimized = handleMLIROptAttr(forStmt, *moduleOp, mlirOpt)) {
+            moduleOp = std::move(optimized);
+          } else {
+            llvm::errs() << "error producing optimized file\n";
+            return false;
+          }
+        }
+
+        if (llvm::isa<MLIRParallelAttr>(attr)) {
+          if (!MLIRCodeGenerator::runParallelizingPass(*moduleOp,
+                                                       mlirContext.get())) {
+            llvm::errs() << "error parallelizing the module\n";
+            return false;
+          }
+        }
+      }
+
+      // Lower to llvm dialect and add to the mlir queue
+      if (MLIRCodeGenerator::lowerToLLVMDialect(*moduleOp, mlirContext.get())) {
+        std::promise<std::unique_ptr<mlir::ModuleOp>> promise;
+        promise.set_value(std::move(moduleOp));
+        auto futureVal = promise.get_future();
+        moduleProducer.lockAndEnqueue(
+            {std::move(futureVal), std::move(mlirContext)});
+      } else {
+        llvm::errs() << "error while compiling with MLIR\n";
+        return false;
       }
     }
   }
@@ -84,8 +130,22 @@ bool MLIRCodeGenAttrVisitor::VisitAttributedStmt(
   return true;
 }
 
-bool MLIRCodeGenAttrVisitor::handleMLIROptAttr(const MLIROptAttr *mlirOpt,
-                                               ForStmt *forStmt) {
+bool MLIRCodeGenAttrVisitor::handleMLIRAttr(ForStmt *forStmt,
+                                            mlir::ModuleOp &module,
+                                            mlir::OpBuilder &opBuilder) {
+
+  auto forloopName = createFunctionName(forStmt, sourceManager);
+
+  MLIRCodeGenerator codeGen(forStmt, astContext, module, lockableLLVMContext,
+                            opBuilder, sourceManager, diags);
+
+  // Writes to module
+  return codeGen.lowerToMLIR();
+}
+
+std::unique_ptr<mlir::ModuleOp> MLIRCodeGenAttrVisitor::handleMLIROptAttr(
+    ForStmt *forStmt, mlir::ModuleOp &module, const MLIROptAttr *mlirOpt) {
+
   llvm::SmallVector<StringRef> attrArgs;
 
   for (auto it : mlirOpt->argv()) {
@@ -99,37 +159,58 @@ bool MLIRCodeGenAttrVisitor::handleMLIROptAttr(const MLIROptAttr *mlirOpt,
     }
   }
 
-  auto forloopName = createFunctionName(forStmt, sourceManager);
-  auto module = initializeMlirModule(opBuilder);
-  {
-    MLIRCodeGenerator codeGen(forStmt, astContext, module, llvmContext,
-                              opBuilder, sourceManager, diags);
-
-    auto llvmModule = codeGen.performLoweringAndOptimizationPipeline(attrArgs);
-    if (llvmModule) {
-      //      auto pair = std::make_pair(std::move(llvmCntx),
-      //      std::move(llvmModule));
-      modules.insert({forloopName, std::move(llvmModule)});
-    } else {
-      llvm::errs() << "error while compiling with MLIR\n";
-      return false;
-    }
-  }
-
-  return true;
+  return MLIRCodeGenerator::runOpt(&module, attrArgs);
 }
+
+// bool MLIRCodeGenAttrVisitor::handleMLIROptAttr(const MLIROptAttr *mlirOpt,
+//                                               mlir::ModuleOp module,
+//                                               ForStmt *forStmt) {
+//  llvm::SmallVector<StringRef> attrArgs;
+//
+//  for (auto it : mlirOpt->argv()) {
+//    auto pair = it.split(" ");
+//
+//    while (true) {
+//      attrArgs.push_back(pair.first);
+//      if (pair.second == "")
+//        break;
+//      pair = pair.second.split(" ");
+//    }
+//  }
+//
+//  auto forloopName = createFunctionName(forStmt, sourceManager);
+//
+//  auto mlirContext = std::make_unique<mlir::MLIRContext>();
+//
+//  mlir::OpBuilder opBuilder(mlirContext.get());
+//
+//  auto module = initializeMlirModule(opBuilder);
+//
+//  MLIRCodeGenerator codeGen(forStmt, astContext, module, lockableLLVMContext,
+//                            opBuilder, sourceManager, diags);
+//
+//  auto mlirModule = codeGen.performLoweringAndOptimizationPipeline(attrArgs);
+//  if (mlirModule) {
+//    std::promise<std::unique_ptr<mlir::ModuleOp>> promise;
+//    promise.set_value(std::move(mlirModule));
+//    auto futureVal = promise.get_future();
+//    moduleProducer.lockAndEnqueue(
+//        {std::move(futureVal), std::move(mlirContext)});
+//  } else {
+//    llvm::errs() << "error while compiling with MLIR\n";
+//    return false;
+//  }
+//
+//  return true;
+//}
 
 bool RewriterAttrVisitor::VisitAttributedStmt(AttributedStmt *attributedStmt) {
 
   // checking if attr is a tune attr
   for (auto attr : attributedStmt->getAttrs()) {
-    if (isATuneAttr(attr)) {
-      if (!isa<ForStmt>(attributedStmt->getSubStmt())) {
-        return false;
-      }
-      if (isa<MLIROptAttr>(attr)) {
-        loopRefactorer.performExtraction(attributedStmt);
-      }
+    if (isAnMLIRAttr(attr)) {
+      loopRefactorer.performExtraction(attributedStmt);
+      break;
     }
   }
 
@@ -156,34 +237,41 @@ newRewriterFrontendActionFactory(Rewriter &rewriter, DiagnosticsEngine &diags) {
 }
 
 std::unique_ptr<tooling::FrontendActionFactory>
-newMLIRCodeGenFrontendActionFactory(mlir::MLIRContext &mlirContext,
-                                    llvm::LLVMContext &llvmContext,
-                                    Modules &modules,
-                                    DiagnosticsEngine &diags) {
+newMLIRCodeGenFrontendActionFactory(
+    Lockable<Driver::Status, std::mutex> &MLIRCodeGenStatus,
+    Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext,
+    MLIRQueueProducer &modules, DiagnosticsEngine &diags,
+    std::function<void(void)> callback) {
 
   class MLIRCodeGenFrontendActionFactory
       : public tooling::FrontendActionFactory {
-    mlir::MLIRContext &mlirContext;
-    llvm::LLVMContext &llvmContext;
-    Modules &modules;
+    Lockable<Driver::Status, std::mutex> &MLIRCodeGenStatus;
+    Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext;
+    MLIRQueueProducer &modules;
     DiagnosticsEngine &diags;
+    std::function<void(void)> callback;
 
   public:
-    MLIRCodeGenFrontendActionFactory(mlir::MLIRContext &mlirContext,
-                                     llvm::LLVMContext &llvmContext,
-                                     Modules &modules, DiagnosticsEngine &diags)
-        : mlirContext(mlirContext), llvmContext(llvmContext), modules(modules),
-          diags(diags) {}
+    MLIRCodeGenFrontendActionFactory(
+        Lockable<Driver::Status, std::mutex> &MLIRCodeGenStatus,
+        Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext,
+        MLIRQueueProducer &modules, DiagnosticsEngine &diags,
+        std::function<void(void)> callback)
+        : MLIRCodeGenStatus(MLIRCodeGenStatus),
+          lockableLLVMContext(lockableLLVMContext), modules(modules),
+          diags(diags), callback(std::move(callback)) {}
 
     std::unique_ptr<FrontendAction> create() override {
       return std::make_unique<MLIRCodeGenFrontendAction>(
-          mlirContext, llvmContext, diags, modules);
+          MLIRCodeGenStatus, lockableLLVMContext, diags, modules,
+          std::move(callback));
     }
   };
 
   return std::unique_ptr<MLIRCodeGenFrontendActionFactory>(
-      new MLIRCodeGenFrontendActionFactory(mlirContext, llvmContext, modules,
-                                           diags));
+      new MLIRCodeGenFrontendActionFactory(MLIRCodeGenStatus,
+                                           lockableLLVMContext, modules, diags,
+                                           std::move(callback)));
 }
 
 } // namespace clang::tuner

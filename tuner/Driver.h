@@ -1,173 +1,162 @@
-////
-//// Created by Parsa Bagheri on 7/3/21.
-////
-///// This class defines a driver for the compiler operations
 //
-//#ifndef TUNER__DRIVER_H
-//#define TUNER__DRIVER_H
+// Created by Parsa Bagheri on 7/3/21.
 //
-//#include <fstream>
-//#include <memory>
-//#include <vector>
-//
-//#include "clang/AST/Attr.h"
-//#include "clang/AST/AttrVisitor.h"
-//#include "clang/Frontend/TextDiagnosticPrinter.h"
-//#include "clang/Tooling/CommonOptionsParser.h"
-//
-//#include "mlir/Dialect/Affine/IR/AffineOps.h"
-//#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-//#include "mlir/Dialect/MemRef/IR/MemRef.h"
-//#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
-//#include "mlir/Dialect/SCF/SCF.h"
-//#include "mlir/Dialect/StandardOps/IR/Ops.h"
-//#include "mlir/IR/BuiltinOps.h"
-//#include "mlir/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.h"
-//#include "mlir/Target/LLVMIR/ModuleTranslation.h"
-//
+/// This class defines a driver for the compiler operations
+
+#ifndef TUNER__DRIVER_H
+#define TUNER__DRIVER_H
+
+#include <array>
+#include <condition_variable>
+#include <fstream>
+#include <future>
+#include <list>
+#include <memory>
+#include <mutex>
+#include <vector>
+
 //#include "AttrForLoopFinder.h"
-//#include "MLIRCodeGenerator.h"
-//
-//namespace clang {
-//namespace tuner {
-//
-//using MLIRTranslationUnit = AttributedStmt;
-//
-//class Driver {
-//public:
-//  IntrusiveRefCntPtr<DiagnosticOptions> DiagOpts;
-//  TextDiagnosticPrinter *DiagClient;
-//  IntrusiveRefCntPtr<DiagnosticIDs> DiagIDs;
-//  DiagnosticsEngine Diags;
-//  clang::tooling::ClangTool Tool;
-//
-//  Driver(clang::tooling::CommonOptionsParser &optionsParser)
-//      : DiagOpts(new DiagnosticOptions()),
-//        DiagClient(new TextDiagnosticPrinter(llvm::errs(), &*DiagOpts)),
-//        DiagIDs(new DiagnosticIDs()), Diags(DiagIDs, DiagOpts, DiagClient),
-//        Tool(optionsParser.getCompilations(),
-//             optionsParser.getSourcePathList()) {}
-//
-//public:
-//  std::unique_ptr<llvm::SmallVector<MLIRTranslationUnit *>>
-//  collectTranslationUnits() {
-//
-//    clang::tuner::Modules modules;
-//    mlir::MLIRContext context;
-//    clang::Rewriter rewriter;
-//
-//    std::unique_ptr<llvm::SmallVector<AttributedStmt *>> mlirTranslationUnits =
-//        std::make_unique<llvm::SmallVector<AttributedStmt *>>();
-//
-//    auto fronendAction = clang::tuner::newFindAttrStmtsFrontendActionFactory(
-//        context, rewriter, Diags, modules,
-//        [&mlirTranslationUnits](AttributedStmt *attrStmt) -> bool {
-//          mlirTranslationUnits->push_back(attrStmt);
-//          return true;
-//        });
-//
-//    if (Tool.run(fronendAction.get()) == 1) {
-//      return nullptr;
-//    }
-//
-//    return mlirTranslationUnits;
-//  }
-//
-//  /// extracts the forloop within the attribute, performs the necessary type
-//  /// corrections and writes the resulting code to a new file. it returns a
-//  /// string to the location of the file
-//  bool
-//  extractAttributedForLoops(clang::tooling::CommonOptionsParser &optionsParser,
-//                            SourceManager &sourceManager,
-//                            ASTContext &astContext,
-//                            llvm::SmallString<32> &filename) {
-//    clang::tuner::Modules modules;
-//    mlir::MLIRContext context;
-//    clang::Rewriter rewriter;
-//
-//    AttrForLoopRefactorer loopRefactorer(sourceManager, astContext, rewriter);
-//
-//    std::unique_ptr<llvm::SmallVector<AttributedStmt *>> mlirTranslationUnits =
-//        std::make_unique<llvm::SmallVector<AttributedStmt *>>();
-//
-//    auto fronendAction = clang::tuner::newFindAttrStmtsFrontendActionFactory(
-//        context, rewriter, Diags, modules,
-//        [&loopRefactorer](AttributedStmt *attrStmt) -> bool {
-//          loopRefactorer.performExtraction(attrStmt);
-//          return true;
-//        });
-//
-//    clang::tooling::ClangTool Tool(optionsParser.getCompilations(),
-//                                   optionsParser.getSourcePathList());
-//    if (Tool.run(fronendAction.get()) == 1) {
-//      return false;
-//    }
-//
-//    const auto *RewriteBuf =
-//        rewriter.getRewriteBufferFor(rewriter.getSourceMgr().getMainFileID());
-//
-//    if (!RewriteBuf) {
-//      return false;
-//    }
-//
-//    llvm::sys::fs::createTemporaryFile("temp-refactored-file", ".cpp",
-//                                       filename);
-//
-//    std::ofstream out(filename.c_str());
-//    if (out.bad())
-//      return false;
-//
-//    out << std::string(RewriteBuf->begin(), RewriteBuf->end());
-//    out.close();
-//
-//    return true;
-//  }
-//
-//#define LOAD_DIALECT(MODULE, DIALECT) \
-//                                      \
-//  MODULE->getContext()->getOrLoadDialect<DIALECT>()
-//
-//  mlir::ModuleOp initializeMlirModule(mlir::OpBuilder &opBuilder) {
-//    auto theModule = mlir::ModuleOp::create(opBuilder.getUnknownLoc());
-//    LOAD_DIALECT(theModule, mlir::AffineDialect);
-//    LOAD_DIALECT(theModule, mlir::memref::MemRefDialect);
-//    LOAD_DIALECT(theModule, mlir::omp::OpenMPDialect);
-//    LOAD_DIALECT(theModule, mlir::LLVM::LLVMDialect);
-//    LOAD_DIALECT(theModule, mlir::scf::SCFDialect);
-//    LOAD_DIALECT(theModule, mlir::StandardOpsDialect);
-//    mlir::registerOpenMPDialectTranslation(*theModule->getContext());
-//    return theModule;
-//  }
-//
-//  std::unique_ptr<SmallVector<mlir::ModuleOp>> lowerAttrForStmtToMLIRModules(
-//      std::unique_ptr<llvm::SmallVector<MLIRTranslationUnit *>>
-//          translationUnits,
-//      SourceManager &sourceManager, mlir::OpBuilder &opBuilder,
-//      ASTContext &astContext) {
-//    auto modules = std::make_unique<SmallVector<mlir::ModuleOp>>();
-//    for (auto *TU : *translationUnits) {
-//      auto forStmt = dyn_cast<ForStmt>(TU->getSubStmt());
-//      if (!forStmt)
-//        return nullptr;
-//
-//      auto forloopName = createFunctionName(forStmt, sourceManager);
-//      auto module = initializeMlirModule(opBuilder);
-//      auto llvmCntx = std::make_unique<llvm::LLVMContext>();
-//      {
-//        MLIRCodeGenerator codeGen(forStmt, astContext, module, *llvmCntx,
-//                                  opBuilder, sourceManager, Diags);
-//      }
-//    }
-//    assert(modules->size() == translationUnits->size());
-//    return modules;
-//  }
-//
-//public:
-//  ~Driver() = default;
-//  Driver(const Driver &) = delete;
-//};// namespace tuner
-//
-//}
-//}// namespace clang::tuner
-//
-//#endif// TUNER__DRIVER_H
+#include "LockableObject.h"
+#include "MLIRCodeGenerator.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/OpenMP/OpenMPDialect.h"
+#include "mlir/Dialect/SCF/SCF.h"
+#include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/Target/LLVMIR/Dialect/OpenMP/OpenMPToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/ModuleTranslation.h"
+#include "clang/AST/Attr.h"
+#include "clang/AST/AttrVisitor.h"
+#include "clang/Driver/Driver.h"
+#include "clang/Frontend/TextDiagnosticPrinter.h"
+#include "clang/Tooling/CommonOptionsParser.h"
+
+namespace clang {
+namespace tuner {
+
+/// The llvm modules produced in FindAttrStmtsVisitor will be added to this
+/// map, keys: name of the generated function, vals: llvm module
+using MLIRModuleOps = llvm::StringMap<std::unique_ptr<mlir::ModuleOp>>;
+
+using MLIRPair =
+std::pair<FuturePtr<mlir::ModuleOp>, std::unique_ptr<mlir::MLIRContext>>;
+
+using MLIRQueueProducer = QueueProducer<MLIRPair, std::mutex>;
+using MLIRQueueConsumer = QueueConsumer<MLIRPair, std::mutex>;
+
+using LLVMQueueProducer = QueueProducer<FuturePtr<llvm::Module>, std::mutex>;
+using LLVMQueueConsumer = QueueConsumer<FuturePtr<llvm::Module>, std::mutex>;
+
+/// ===-------------------------------------------------------------------===///
+/// The Compiler Driver
+/// ===-------------------------------------------------------------------===///
+/// Topological pipeline of the compiler:
+/// i) Generate mlir code for the attributed statements with the
+/// MLIRCodeGenerator. (optionally save to file with -m0)
+/// ii) Perform additional optimizations with mlir-opt. (optionally save to
+/// file with -m1)
+/// iii) Lower to llvm ir dialect. (optionally save to file with -m2)
+/// iv) Convert llvm dialect to llvm ir module. (optionally save to file with
+/// -m3)
+/// v) Refactor the original source code(extract the mlir attributed stmts
+/// into functions). (optionally save to file with -rs)
+/// vi) Compile the refactored code with clang down to llvm bit code.
+/// vii) Link the two llvm modules modules with the llvm::Linker
+/// viii) Write bitcode to file
+/// ===-------------------------------------------------------------------===///
+class Driver {
+public:
+  enum Status : unsigned { Fail = 0, Success, Unfinished };
+
+private:
+  // Address of main (or any symbol in executable), used for getting the path of
+  // the executable
+  void *mainAddr;
+  const char *argv0; // The name of the executable
+
+  // Clang stuff
+  DiagnosticsEngine diags;
+  clang::driver::Driver clangDriver;
+
+  // LLVMContext isn't thread safe, this is a mutex wrapper to make it lockable
+  Lockable<llvm::LLVMContext, std::mutex> lockableLLVMContext;
+
+  // State of the compiler
+  Lockable<Status, std::mutex> MLIRCodeGenStatus;
+  Lockable<Status, std::mutex> MLIRCompilationStatus;
+  Lockable<Status, std::mutex> RefactoringStatus;
+  Lockable<Status, std::mutex> ClangCompilationStatus;
+  Lockable<Status, std::mutex> LLVMLinkingStatus;
+
+public:
+  Driver(int argc, const char **argv, void *mainAddr);
+  ~Driver();
+
+  // Driver is immovable and uncopyable
+  Driver(const Driver &other) = delete;
+  Driver &operator=(const Driver &other) = delete;
+
+  // ===-------------------------------------------------------------------===//
+  // Functions for querying state of driver
+  // ===-------------------------------------------------------------------===//
+
+  Status getMLIRCodeGenStatus();
+  Status getMLIRCompilationStatus();
+  Status getRefactoringStatus();
+  Status getClangCompilationStatus();
+  Status getLLVMLinkingStatus();
+
+  bool isMLIRCodeGenFinished();
+  bool isMLIRCompilationFinished();
+  bool isRefactoringFinished();
+  bool isClangCompilationFinished();
+  bool isLLVMLinkingFinished();
+
+  // ===-------------------------------------------------------------------===//
+  // Asynchronous tasks
+  // ===-------------------------------------------------------------------===//
+
+  /// Refactors source files and invokes clang on the refactored files
+  /// returns a future llvm module
+  FuturePtr<llvm::Module> PerformClangCompilation();
+
+  /// Generates mlir code for mlir attributed stmts
+  /// Fills the mlir module queue with generated mlir module ops
+  /// returns a future bool indicating the status of thread upon termination
+  std::future<bool> PerformMLIRCodeGeneration(MLIRQueueProducer &);
+
+  /// Translates mlir modules to llvm modules
+  /// takes a lockable list of mlir modules and an empty lockable list of
+  /// llvm modules and fills it
+  /// returns a future bool indicating the status of thread upon termination
+  std::future<bool> PerformMLIRCompilation(MLIRQueueConsumer &,
+                                           LLVMQueueProducer &);
+
+  /// returns a future llvm module; the final module
+  FuturePtr<llvm::Module> PerformModuleLinking(FuturePtr<llvm::Module>,
+                                               LLVMQueueConsumer &);
+
+private:
+  std::unique_ptr<llvm::Module>
+  convertToLLVMIR(FuturePtr<mlir::ModuleOp> futureModuleOp);
+
+  // ===-------------------------------------------------------------------===//
+  // Worker threads will use these functions to set the status of the driver
+  // ===-------------------------------------------------------------------===//
+
+  void setMLIRCodeGenStatus(Status status);
+  void setMLIRCompilationStatus(Status status);
+  void setRefactoringStatus(Status status);
+  void setClangCompilationStatus(Status status);
+  void setLLVMLinkingStatus(Status status);
+
+  /// Gets rid of debug symbols in llvm modules
+  void runStripSymbolsPass(llvm::Module &module);
+};
+
+} // namespace tuner
+} // namespace clang
+
+#endif // TUNER__DRIVER_H

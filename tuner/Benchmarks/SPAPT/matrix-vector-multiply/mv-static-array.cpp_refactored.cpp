@@ -1,5 +1,5 @@
 #include <memory>
-extern "C" void __forloop__Users_parsabagheri_Development_llvm_project_tuner_Benchmarks_SPAPT_matrix_vector_multiply_mv_static_array_cpp_29_3(float (*)[256], float *, float *);
+extern "C" void __forloop__Users_parsabagheri_Development_llvm_project_tuner_Benchmarks_SPAPT_matrix_vector_multiply_mv_static_array_cpp_30_3(float*, float*, std::size_t, std::size_t, std::size_t, std::size_t, std::size_t, float*, float*, std::size_t, std::size_t, std::size_t, float*, float*, std::size_t, std::size_t, std::size_t);
 #include "../utils.hpp"
 
 /// These parameters can be defined with -D flag to the compiler
@@ -24,8 +24,7 @@ extern "C" void __forloop__Users_parsabagheri_Development_llvm_project_tuner_Ben
 /// FIXME Currently templated declarations are not implemented in the MLIRCodeGenerator,
 /// this will be a generic operation in the future
 void mat_vec_mult(TYPE a[M][N], TYPE b[N], TYPE c[M]) {
-
-  __forloop__Users_parsabagheri_Development_llvm_project_tuner_Benchmarks_SPAPT_matrix_vector_multiply_mv_static_array_cpp_29_3(a, b, c);
+  __forloop__Users_parsabagheri_Development_llvm_project_tuner_Benchmarks_SPAPT_matrix_vector_multiply_mv_static_array_cpp_30_3(a, a, 0, 256, 256, 1, 1, b, b, 0, 256, 1, c, c, 0, 256, 1);
 
 }
 

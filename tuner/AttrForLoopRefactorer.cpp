@@ -95,10 +95,8 @@ void AttrForLoopRefactorer::performExtraction(AttributedStmt *stmt) {
   auto attrs = stmt->getAttrs();
 
   for (auto attr : attrs) {
-    if (isATuneAttr(attr)) {
-      if (auto blockDim = dyn_cast<MLIROptAttr>(attr)) {
-        forStmt = dyn_cast<ForStmt>(stmt->getSubStmt());
-      }
+    if (isAnMLIRAttr(attr)) {
+      forStmt = dyn_cast<ForStmt>(stmt->getSubStmt());
     }
   }
 

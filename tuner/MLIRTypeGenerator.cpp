@@ -97,16 +97,16 @@ mlir::Type MLIRTypeGenerator::VisitDeclRefExpr(DeclRefExpr *declRef) {
   }
 }
 
-mlir::MemRefType MLIRTypeGenerator::getType(VarDecl *varDecl) {
+mlir::MemRefType MLIRTypeGenerator::getMemRefType(VarDecl *varDecl) {
   auto memref =
       createMemref(mlirContext, varDecl->getType(), llvmTypeTranlator, CGTypes);
   return memref;
 }
 
-mlir::MemRefType MLIRTypeGenerator::getType(Decl *decl) {
+mlir::MemRefType MLIRTypeGenerator::getMemRefType(Decl *decl) {
   switch (decl->getKind()) {
   case Decl::Var:
-    return getType(dyn_cast<VarDecl>(decl));
+    return getMemRefType(dyn_cast<VarDecl>(decl));
   default:
     assert(false && "only this table is supported for now");
     return nullptr;

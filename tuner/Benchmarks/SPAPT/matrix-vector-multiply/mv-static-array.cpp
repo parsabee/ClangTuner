@@ -22,10 +22,11 @@
 /// FIXME Currently templated declarations are not implemented in the MLIRCodeGenerator,
 /// this will be a generic operation in the future
 void mat_vec_mult(TYPE a[M][N], TYPE b[N], TYPE c[M]) {
-
-  [[parallel_for::mlir_opt("--parallel-loop-tiling",
-                           "--convert-scf-to-openmp",
-                           "--convert-openmp-to-llvm")]]
+  [[mlir::parallel]]
+  [[mlir::opt("--convert-scf-to-openmp",
+              "--convert-scf-to-std",
+              "--convert-openmp-to-llvm",
+              "--convert-std-to-llvm")]]
   for (size_t i = 0; i < M; i++) {
     for (size_t j = 0; j < N; j++) {
       c[i] += a[i][j] * b[j];

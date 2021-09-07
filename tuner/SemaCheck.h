@@ -10,7 +10,7 @@
 namespace clang {
 namespace tuner {
 
-bool isATuneAttr(const Attr *);
+bool isAnMLIRAttr(const Attr *);
 
 } // namespace tuner
 } // namespace clang

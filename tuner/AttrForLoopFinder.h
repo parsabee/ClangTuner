@@ -6,6 +6,8 @@
 #define CLANG_FINDATTRSTMTS_H
 
 #include "AttrForLoopRefactorer.h"
+#include "Driver.h"
+#include "LockableObject.h"
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/RecursiveASTVisitor.h"
@@ -28,32 +30,40 @@
 namespace clang {
 namespace tuner {
 
-/// The llvm modules produced in FindAttrStmtsVisitor will be added to this
-/// map, keys: name of the generated function, vals: llvm module
-using Modules = llvm::StringMap<std::unique_ptr<llvm::Module>>;
-
 class MLIRCodeGenAttrVisitor
     : public RecursiveASTVisitor<MLIRCodeGenAttrVisitor> {
-  mlir::ModuleOp theModule;
-  mlir::OpBuilder opBuilder;
+
   ASTContext &astContext;
   SourceManager &sourceManager;
   DiagnosticsEngine &diags;
-  Modules &modules;
-  llvm::LLVMContext &llvmContext;
+  MLIRQueueProducer &moduleProducer;
+  Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext;
+  Lockable<tuner::Driver::Status, std::mutex> &MLIRCodeGenStatus;
 
 public:
-  MLIRCodeGenAttrVisitor(mlir::MLIRContext &context,
-                         llvm::LLVMContext &llvmContext, ASTContext &astContext,
-                         SourceManager &sm, DiagnosticsEngine &diags,
-                         Modules &modules)
-      : opBuilder(&context), astContext(astContext), sourceManager(sm),
-        diags(diags), modules(modules), llvmContext(llvmContext) {}
+  MLIRCodeGenAttrVisitor(
+      Lockable<tuner::Driver::Status, std::mutex> &MLIRCodeGenStatus,
+      Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext,
+      ASTContext &astContext, SourceManager &sm, DiagnosticsEngine &diags,
+      MLIRQueueProducer &modules)
+      : astContext(astContext), sourceManager(sm), diags(diags),
+        moduleProducer(modules), lockableLLVMContext(lockableLLVMContext),
+        MLIRCodeGenStatus(MLIRCodeGenStatus) {}
+
+  MLIRCodeGenAttrVisitor(const MLIRCodeGenAttrVisitor &) = delete;
+
+  MLIRCodeGenAttrVisitor(MLIRCodeGenAttrVisitor &&other)
+      : astContext(other.astContext), sourceManager(other.sourceManager),
+        diags(other.diags), moduleProducer(other.moduleProducer),
+        lockableLLVMContext(other.lockableLLVMContext),
+        MLIRCodeGenStatus(other.MLIRCodeGenStatus) {}
 
   bool VisitAttributedStmt(AttributedStmt *attributedStmt);
 
 private:
-  bool handleMLIROptAttr(const MLIROptAttr *, ForStmt *);
+  bool handleMLIRAttr(ForStmt *, mlir::ModuleOp &, mlir::OpBuilder &);
+  std::unique_ptr<mlir::ModuleOp>
+  handleMLIROptAttr(ForStmt *, mlir::ModuleOp &, const MLIROptAttr *);
 };
 
 class RewriterAttrVisitor : public RecursiveASTVisitor<RewriterAttrVisitor> {
@@ -79,12 +89,15 @@ private:
 template <typename AttrStmtVisitor>
 class AttrStmtConsumer : public ASTConsumer {
   AttrStmtVisitor Visitor;
+  std::function<void(void)> callback;
 
 public:
-  AttrStmtConsumer(AttrStmtVisitor &&Visitor) : Visitor(std::move(Visitor)) {}
+  AttrStmtConsumer(AttrStmtVisitor Visitor, std::function<void(void)> callback)
+      : Visitor(std::move(Visitor)), callback(std::move(callback)) {}
 
   void HandleTranslationUnit(ASTContext &Context) override {
     Visitor.TraverseDecl(Context.getTranslationUnitDecl());
+    callback();
   }
 };
 
@@ -100,32 +113,39 @@ public:
   CreateASTConsumer(CompilerInstance &Compiler,
                     llvm::StringRef InFile) override {
     rewriter.setSourceMgr(Compiler.getSourceManager(), Compiler.getLangOpts());
-    return std::make_unique<AttrStmtConsumer<RewriterAttrVisitor>>(
-        RewriterAttrVisitor(Compiler.getASTContext(),
-                            Compiler.getSourceManager(), rewriter, diags));
+    return std::unique_ptr<AttrStmtConsumer<RewriterAttrVisitor>>(
+        new AttrStmtConsumer(RewriterAttrVisitor(Compiler.getASTContext(),
+                                                 Compiler.getSourceManager(),
+                                                 rewriter, diags),
+                             [] {}));
   }
 };
 
 class MLIRCodeGenFrontendAction : public ASTFrontendAction {
-  mlir::MLIRContext &mlirContext;
-  llvm::LLVMContext &llvmContext;
+  Lockable<Driver::Status, std::mutex> &MLIRCodeGenStatus;
+  Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext;
   DiagnosticsEngine &diags;
-  Modules &modules;
+  MLIRQueueProducer &modules;
+  std::function<void(void)> callback;
 
 public:
-  MLIRCodeGenFrontendAction(mlir::MLIRContext &mlirContext,
-                            llvm::LLVMContext &llvmContext,
-                            DiagnosticsEngine &diags, Modules &modules)
-      : mlirContext(mlirContext), llvmContext(llvmContext), diags(diags),
-        modules(modules) {}
+  MLIRCodeGenFrontendAction(
+      Lockable<Driver::Status, std::mutex> &MLIRCodeGenStatus,
+      Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext,
+      DiagnosticsEngine &diags, MLIRQueueProducer &modules,
+      std::function<void(void)> callback)
+      : MLIRCodeGenStatus(MLIRCodeGenStatus),
+        lockableLLVMContext(lockableLLVMContext), diags(diags),
+        modules(modules), callback(std::move(callback)) {}
 
   std::unique_ptr<ASTConsumer>
   CreateASTConsumer(CompilerInstance &Compiler,
                     llvm::StringRef InFile) override {
     return std::make_unique<AttrStmtConsumer<MLIRCodeGenAttrVisitor>>(
-        MLIRCodeGenAttrVisitor(mlirContext, llvmContext,
+        MLIRCodeGenAttrVisitor(MLIRCodeGenStatus, lockableLLVMContext,
                                Compiler.getASTContext(),
-                               Compiler.getSourceManager(), diags, modules));
+                               Compiler.getSourceManager(), diags, modules),
+        std::move(callback));
   }
 };
 
@@ -133,9 +153,11 @@ std::unique_ptr<tooling::FrontendActionFactory>
 newRewriterFrontendActionFactory(Rewriter &rewriter, DiagnosticsEngine &diags);
 
 std::unique_ptr<tooling::FrontendActionFactory>
-newMLIRCodeGenFrontendActionFactory(mlir::MLIRContext &mlirContext,
-                                    llvm::LLVMContext &llvmContext,
-                                    Modules &modules, DiagnosticsEngine &diags);
+newMLIRCodeGenFrontendActionFactory(
+    Lockable<Driver::Status, std::mutex> &MLIRCodeGenStatus,
+    Lockable<llvm::LLVMContext, std::mutex> &lockableLLVMContext,
+    MLIRQueueProducer &, DiagnosticsEngine &,
+    std::function<void(void)> callback);
 
 } // namespace tuner
 } // namespace clang
