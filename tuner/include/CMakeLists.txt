@@ -1,1 +1,1 @@
-add_subdirectory(ClangTune)
+add_subdirectory(clangtuner)

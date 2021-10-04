@@ -384,19 +384,27 @@ static Attr *handleOpenCLUnrollHint(Sema &S, Stmt *St, const ParsedAttr &A,
   return ::new (S.Context) OpenCLUnrollHintAttr(S.Context, A, UnrollFactor);
 }
 
-/// Added by Parsa Bagheri April 22, 2021
-/// adds a TuneBlockDim attribute to the ast
-static Attr *handleTuneBlockDim(Sema &S, Stmt *St, const ParsedAttr &A,
-                            SourceRange Range) {
-  if (A.getNumArgs() == 0) {
-    S.Diag(A.getLoc(), diag::err_attribute_argument_type)
-        << A << AANT_ArgumentIntegerConstant;
-    return nullptr;
-  }
+//===----------------------------------------------------------------------===//
+// ClangTuner Attributes
+//===----------------------------------------------------------------------===//
 
-  std::vector<unsigned> DiagnosticIdentifiers;
-  for (unsigned i = 0, end = A.getNumArgs(); i != end; ++i) {
-    Expr *E = A.getArgAsExpr(i);
+/// There is nothing to semantic check for this attribute, we just construct 
+/// the attribute 
+static Attr *handleMLIRFor(Sema &S, const ParsedAttr &A) {
+  return ::new (S.Context) MLIRForAttr(S.Context, A);
+}
+
+/// FIXME, do a static analysis to make sure the loop does not have 
+/// loop carried dependencies
+static Attr *handleMLIRParallel(Sema &S, const ParsedAttr &A) {
+  return ::new (S.Context) MLIRParallelAttr(S.Context, A);
+}
+
+static Attr *handleMLIRParallelCollapse(Sema &S, Stmt *St, const ParsedAttr &A,
+                            SourceRange Range) {
+  unsigned CollapseFactor = 1;
+  if (A.getNumArgs() == 1) {
+    Expr *E = A.getArgAsExpr(0);
     Optional<llvm::APSInt> ArgVal;
 
     if (!(ArgVal = E->getIntegerConstantExpr(S.Context))) {
@@ -404,11 +412,67 @@ static Attr *handleTuneBlockDim(Sema &S, Stmt *St, const ParsedAttr &A,
           << A << AANT_ArgumentIntegerConstant << E->getSourceRange();
       return nullptr;
     }
-    DiagnosticIdentifiers.push_back(
-        static_cast<unsigned>(ArgVal->getExtValue()));
+
+    int Val = ArgVal->getSExtValue();
+    if (Val < 1 || Val > 3) {
+      S.Diag(A.getRange().getBegin(),
+             diag::err_attribute_requires_positive_integer)
+          << A << /* positive */ 0;
+      return nullptr;
+    }
+    CollapseFactor = static_cast<unsigned>(Val);
   }
 
-  return ::new (S.Context) TuneBlockDimAttr(S.Context, A,
+  return ::new (S.Context) MLIRParallelCollapseAttr(S.Context, A, CollapseFactor);
+}
+
+static Attr *handleMLIROpenMP(Sema &S, Stmt *St, const ParsedAttr &A,
+                            SourceRange Range) {
+  unsigned NumThreads = 1;
+  if (A.getNumArgs() == 1) {
+    Expr *E = A.getArgAsExpr(0);
+    Optional<llvm::APSInt> ArgVal;
+
+    if (!(ArgVal = E->getIntegerConstantExpr(S.Context))) {
+      S.Diag(A.getLoc(), diag::err_attribute_argument_type)
+          << A << AANT_ArgumentIntegerConstant << E->getSourceRange();
+      return nullptr;
+    }
+
+    int Val = ArgVal->getSExtValue();
+    if (Val < 1) {
+      S.Diag(A.getRange().getBegin(),
+             diag::err_attribute_requires_positive_integer)
+          << A << /* positive */ 0;
+      return nullptr;
+    }
+    NumThreads = static_cast<unsigned>(Val);
+  }
+
+  return ::new (S.Context) MLIRParallelCollapseAttr(S.Context, A, NumThreads);
+}
+
+static Attr *handleMLIROpt(Sema &S, Stmt *St, const ParsedAttr &A,
+                            SourceRange Range) {
+  if (A.getNumArgs() == 0) {
+    S.Diag(A.getLoc(), diag::err_attribute_argument_type)
+        << A << AANT_ArgumentIntegerConstant;
+    return nullptr;
+  }
+
+  std::vector<StringRef> DiagnosticIdentifiers;
+  for (unsigned I = 0, E = A.getNumArgs(); I != E; ++I) {
+    StringRef RuleName;
+
+    if (!S.checkStringLiteralArgumentAttr(A, I, RuleName, nullptr))
+      return nullptr;
+
+    // FIXME: Warn if the rule name is unknown. This is tricky because only
+    // clang-tidy knows about available rules.
+    DiagnosticIdentifiers.push_back(RuleName);
+  }
+
+  return ::new (S.Context) MLIROptAttr(S.Context, A,
               DiagnosticIdentifiers.data(), DiagnosticIdentifiers.size());
 }
 
@@ -442,8 +506,16 @@ static Attr *ProcessStmtAttribute(Sema &S, Stmt *St, const ParsedAttr &A,
     return handleLoopHintAttr(S, St, A, Range);
   case ParsedAttr::AT_OpenCLUnrollHint:
     return handleOpenCLUnrollHint(S, St, A, Range);
-  case ParsedAttr::AT_TuneBlockDim:
-    return handleTuneBlockDim(S, St, A, Range);
+  case ParsedAttr::AT_MLIRFor:
+    return handleMLIRFor(S, A);
+  case ParsedAttr::AT_MLIRParallel:
+    return handleMLIRParallel(S, A);
+  case ParsedAttr::AT_MLIRParallelCollapse:
+    return handleMLIRParallelCollapse(S, St, A, Range);
+  case ParsedAttr::AT_MLIROpenMP:
+    return handleMLIROpenMP(S, St, A, Range);
+  case ParsedAttr::AT_MLIROpt:
+    return handleMLIROpt(S, St, A, Range);
   case ParsedAttr::AT_Suppress:
     return handleSuppressAttr(S, St, A, Range);
   case ParsedAttr::AT_NoMerge:

@@ -1,4 +1,4 @@
-// RUN: mlir-opt %s -allow-unregistered-dialect -pass-pipeline='func(canonicalize)' -split-input-file | FileCheck --dump-input-context 20 %s
+// RUN: mlir-opt %s -allow-unregistered-dialect -pass-pipeline='builtin.func(canonicalize)' -split-input-file | FileCheck --dump-input-context 20 %s
 
 /// Test the folding of BranchOp.
 
@@ -443,4 +443,3 @@ func @assert(%arg : i1) {
   assert %arg, "Computer says no"
   return
 }
-

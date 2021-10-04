@@ -51,7 +51,8 @@ public:
   /// Input to prepare and apply tweaks.
   struct Selection {
     Selection(const SymbolIndex *Index, ParsedAST &AST, unsigned RangeBegin,
-              unsigned RangeEnd, SelectionTree ASTSelection);
+              unsigned RangeEnd, SelectionTree ASTSelection,
+              llvm::vfs::FileSystem *VFS);
     /// The text of the active document.
     llvm::StringRef Code;
     /// The Index for handling codebase related queries.
@@ -67,6 +68,9 @@ public:
     unsigned SelectionEnd;
     /// The AST nodes that were selected.
     SelectionTree ASTSelection;
+    /// File system used to access source code (for cross-file tweaks).
+    /// This is only populated when applying a tweak, not during prepare.
+    llvm::vfs::FileSystem *FS = nullptr;
     // FIXME: provide a way to get sources and ASTs for other files.
   };
 
@@ -74,6 +78,9 @@ public:
     /// A message to be displayed to the user.
     llvm::Optional<std::string> ShowMessage;
     FileEdits ApplyEdits;
+    /// Whether the edits should be formatted before presenting to the client.
+    /// Note that it applies to all files.
+    bool FormatEdits = true;
 
     static Effect showMessage(StringRef S) {
       Effect E;

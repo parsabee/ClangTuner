@@ -21,11 +21,11 @@
 /// 'a' and 'b' are the operands are results are stored in 'c'
 /// it is assumed that 'c' is initialized to 0
 /// it is also assumed that a is m * n and b is n * t
-template<typename T, size_t m, size_t n, size_t k>
-void matmult(T a[m][n], T b[n][k], T c[m][k]) {
-  for (size_t i = 0; i < m; i++) {
-    for (size_t j = 0; j < n; j++) {
-      for (size_t t = 0; t < k; t++) {
+void matmult(TYPE a[M][N], TYPE b[N][K], TYPE c[M][K]) {
+  [[mlir::forloop]]
+  for (size_t i = 0; i < M; i++) {
+    for (size_t j = 0; j < N; j++) {
+      for (size_t t = 0; t < K; t++) {
         c[i][t] += a[i][j] * b[j][t];
       }
     }
@@ -66,7 +66,7 @@ int main() {
   initializeRandom_2D<float, N, K>(b);
   initialize_2D<float, M, K>(c, 0.0f);
 
-  matmult<TYPE, M, N, K>(a, b, c);
+  matmult(a, b, c);
 
   if (!verify<float, M, N, K>(a, b, c))
     return 1;

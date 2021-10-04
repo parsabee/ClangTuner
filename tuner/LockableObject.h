@@ -27,10 +27,9 @@ protected:
 
 public:
   explicit Locked(Lockable<T, Mutex> &obj) : lock(obj.mtx), lockableObj(obj) {}
-  Locked(const Locked<T, Mutex> &) = delete;
-  Locked(Locked<T, Mutex> &&) = delete;
-  Locked<T, Mutex> operator=(const Locked<T, Mutex> &) = delete;
   ~Locked() = default;
+  Locked(const Locked<T, Mutex> &) = delete;
+  Locked<T, Mutex> operator=(const Locked<T, Mutex> &) = delete;
   T &getObject() { return lockableObj.Obj; }
 };
 
@@ -48,7 +47,7 @@ protected:
   Mutex mtx;
 
 public:
-  Lockable(T object) : Obj(std::move(object)) {}
+  explicit Lockable(T &&obj) : Obj(std::move(obj)) {}
   Lockable(Args &&... args) : Obj(std::forward(args)...) {}
   Lockable(const Lockable<T, Mutex> &other) = delete;
   Lockable(Lockable<T, Mutex> &&other)
@@ -82,7 +81,7 @@ template <typename T, typename Mutex> class QueueProducer {
   LockableQueue<T, Mutex> &lockableQueue;
 
 public:
-  QueueProducer(LockableQueue<T, Mutex> &lockableQueue)
+  explicit QueueProducer(LockableQueue<T, Mutex> &lockableQueue)
       : lockableQueue(lockableQueue) {}
 
   QueueProducer(const QueueProducer &) = delete;
@@ -112,8 +111,10 @@ template <typename T, typename Mutex> class QueueConsumer {
   LockableQueue<T, Mutex> &lockableQueue;
 
 public:
-  QueueConsumer(LockableQueue<T, Mutex> &lockableQueue)
+  explicit QueueConsumer(LockableQueue<T, Mutex> &lockableQueue)
       : lockableQueue(lockableQueue) {}
+
+  QueueConsumer(const QueueConsumer &) = delete;
 
   bool lockAndDequeue(T &future) {
     std::lock_guard lg(lockableQueue.mtx);
@@ -129,7 +130,7 @@ public:
   /// or the predicate is satisfied
   void waitUntilAvailableOr(std::function<bool(void)> predicate) {
     std::unique_lock<Mutex> ul(lockableQueue.mtx);
-    lockableQueue.cnd.wait(ul, [this, &predicate] {
+    lockableQueue.cnd.wait(ul, [this, predicate] {
       return predicate() || !lockableQueue.getList().empty();
     });
   }

@@ -12,13 +12,13 @@ target triple = "x86_64-apple-macosx10.15.0"
 @4 = private unnamed_addr constant [152 x i8] c";LLVMDialectModule;__forloop__Users_parsabagheri_Development_llvm_project_tuner_Benchmarks_SPAPT_matrix_vector_multiply_mv_static_array_cpp_30_3;26;5;;\00", align 1
 
 ; Function Attrs: noinline nounwind optnone ssp uwtable mustprogress
-define void @_Z12mat_vec_multPA256_fPfS1_([256 x float]* %0, float* %1, float* %2) #0 {
-  %4 = alloca [256 x float]*, align 8
+define void @_Z12mat_vec_multPA1024_fPfS1_([1024 x float]* %0, float* %1, float* %2) #0 {
+  %4 = alloca [1024 x float]*, align 8
   %5 = alloca float*, align 8
   %6 = alloca float*, align 8
   %7 = alloca i64, align 8
   %8 = alloca i64, align 8
-  store [256 x float]* %0, [256 x float]** %4, align 8
+  store [1024 x float]* %0, [1024 x float]** %4, align 8
   store float* %1, float** %5, align 8
   store float* %2, float** %6, align 8
   store i64 0, i64* %7, align 8
@@ -26,7 +26,7 @@ define void @_Z12mat_vec_multPA256_fPfS1_([256 x float]* %0, float* %1, float* %
 
 9:                                                ; preds = %37, %3
   %10 = load i64, i64* %7, align 8
-  %11 = icmp ult i64 %10, 256
+  %11 = icmp ult i64 %10, 1024
   br i1 %11, label %12, label %40
 
 12:                                               ; preds = %9
@@ -35,15 +35,15 @@ define void @_Z12mat_vec_multPA256_fPfS1_([256 x float]* %0, float* %1, float* %
 
 13:                                               ; preds = %33, %12
   %14 = load i64, i64* %8, align 8
-  %15 = icmp ult i64 %14, 256
+  %15 = icmp ult i64 %14, 1024
   br i1 %15, label %16, label %36
 
 16:                                               ; preds = %13
-  %17 = load [256 x float]*, [256 x float]** %4, align 8
+  %17 = load [1024 x float]*, [1024 x float]** %4, align 8
   %18 = load i64, i64* %7, align 8
-  %19 = getelementptr inbounds [256 x float], [256 x float]* %17, i64 %18
+  %19 = getelementptr inbounds [1024 x float], [1024 x float]* %17, i64 %18
   %20 = load i64, i64* %8, align 8
-  %21 = getelementptr inbounds [256 x float], [256 x float]* %19, i64 0, i64 %20
+  %21 = getelementptr inbounds [1024 x float], [1024 x float]* %19, i64 0, i64 %20
   %22 = load float, float* %21, align 4
   %23 = load float*, float** %5, align 8
   %24 = load i64, i64* %8, align 8
@@ -83,24 +83,24 @@ declare void @llvm.dbg.declare(metadata, metadata, metadata) #1
 ; Function Attrs: noinline norecurse nounwind optnone ssp uwtable mustprogress
 define i32 @main() #2 {
   %1 = alloca i32, align 4
-  %2 = alloca [256 x [256 x float]], align 16
-  %3 = alloca [256 x float], align 16
-  %4 = alloca [256 x float], align 16
+  %2 = alloca [1024 x [1024 x float]], align 16
+  %3 = alloca [1024 x float], align 16
+  %4 = alloca [1024 x float], align 16
   store i32 0, i32* %1, align 4
-  %5 = getelementptr inbounds [256 x [256 x float]], [256 x [256 x float]]* %2, i64 0, i64 0
-  call void @_Z19initializeRandom_2DIfLm256ELm256EEvPAT1__T_([256 x float]* %5)
-  %6 = getelementptr inbounds [256 x float], [256 x float]* %3, i64 0, i64 0
-  call void @_Z19initializeRandom_1DIfLm256EEvPT_(float* %6)
-  %7 = getelementptr inbounds [256 x float], [256 x float]* %4, i64 0, i64 0
-  call void @_Z13initialize_1DIfLm256EEvPT_S0_(float* %7, float 0.000000e+00)
-  %8 = getelementptr inbounds [256 x [256 x float]], [256 x [256 x float]]* %2, i64 0, i64 0
-  %9 = getelementptr inbounds [256 x float], [256 x float]* %3, i64 0, i64 0
-  %10 = getelementptr inbounds [256 x float], [256 x float]* %4, i64 0, i64 0
-  call void @_Z12mat_vec_multPA256_fPfS1_([256 x float]* %8, float* %9, float* %10)
-  %11 = getelementptr inbounds [256 x [256 x float]], [256 x [256 x float]]* %2, i64 0, i64 0
-  %12 = getelementptr inbounds [256 x float], [256 x float]* %3, i64 0, i64 0
-  %13 = getelementptr inbounds [256 x float], [256 x float]* %4, i64 0, i64 0
-  %14 = call zeroext i1 @_Z6verifyIfLm256ELm256EEbPAT1__T_PS0_S3_([256 x float]* %11, float* %12, float* %13)
+  %5 = getelementptr inbounds [1024 x [1024 x float]], [1024 x [1024 x float]]* %2, i64 0, i64 0
+  call void @_Z19initializeRandom_2DIfLm1024ELm1024EEvPAT1__T_([1024 x float]* %5)
+  %6 = getelementptr inbounds [1024 x float], [1024 x float]* %3, i64 0, i64 0
+  call void @_Z19initializeRandom_1DIfLm1024EEvPT_(float* %6)
+  %7 = getelementptr inbounds [1024 x float], [1024 x float]* %4, i64 0, i64 0
+  call void @_Z13initialize_1DIfLm1024EEvPT_S0_(float* %7, float 0.000000e+00)
+  %8 = getelementptr inbounds [1024 x [1024 x float]], [1024 x [1024 x float]]* %2, i64 0, i64 0
+  %9 = getelementptr inbounds [1024 x float], [1024 x float]* %3, i64 0, i64 0
+  %10 = getelementptr inbounds [1024 x float], [1024 x float]* %4, i64 0, i64 0
+  call void @_Z12mat_vec_multPA1024_fPfS1_([1024 x float]* %8, float* %9, float* %10)
+  %11 = getelementptr inbounds [1024 x [1024 x float]], [1024 x [1024 x float]]* %2, i64 0, i64 0
+  %12 = getelementptr inbounds [1024 x float], [1024 x float]* %3, i64 0, i64 0
+  %13 = getelementptr inbounds [1024 x float], [1024 x float]* %4, i64 0, i64 0
+  %14 = call zeroext i1 @_Z6verifyIfLm1024ELm1024EEbPAT1__T_PS0_S3_([1024 x float]* %11, float* %12, float* %13)
   br i1 %14, label %16, label %15
 
 15:                                               ; preds = %0
@@ -117,11 +117,11 @@ define i32 @main() #2 {
 }
 
 ; Function Attrs: noinline nounwind optnone ssp uwtable mustprogress
-define linkonce_odr void @_Z19initializeRandom_2DIfLm256ELm256EEvPAT1__T_([256 x float]* %0) #0 {
-  %2 = alloca [256 x float]*, align 8
+define linkonce_odr void @_Z19initializeRandom_2DIfLm1024ELm1024EEvPAT1__T_([1024 x float]* %0) #0 {
+  %2 = alloca [1024 x float]*, align 8
   %3 = alloca i64, align 8
   %4 = alloca i64, align 8
-  store [256 x float]* %0, [256 x float]** %2, align 8
+  store [1024 x float]* %0, [1024 x float]** %2, align 8
   %5 = call i64 @time(i64* null)
   %6 = trunc i64 %5 to i32
   call void @srand(i32 %6)
@@ -130,7 +130,7 @@ define linkonce_odr void @_Z19initializeRandom_2DIfLm256ELm256EEvPAT1__T_([256 x
 
 7:                                                ; preds = %26, %1
   %8 = load i64, i64* %3, align 8
-  %9 = icmp ult i64 %8, 256
+  %9 = icmp ult i64 %8, 1024
   br i1 %9, label %10, label %29
 
 10:                                               ; preds = %7
@@ -139,17 +139,17 @@ define linkonce_odr void @_Z19initializeRandom_2DIfLm256ELm256EEvPAT1__T_([256 x
 
 11:                                               ; preds = %22, %10
   %12 = load i64, i64* %4, align 8
-  %13 = icmp ult i64 %12, 256
+  %13 = icmp ult i64 %12, 1024
   br i1 %13, label %14, label %25
 
 14:                                               ; preds = %11
   %15 = call i32 @rand()
   %16 = sitofp i32 %15 to float
-  %17 = load [256 x float]*, [256 x float]** %2, align 8
+  %17 = load [1024 x float]*, [1024 x float]** %2, align 8
   %18 = load i64, i64* %3, align 8
-  %19 = getelementptr inbounds [256 x float], [256 x float]* %17, i64 %18
+  %19 = getelementptr inbounds [1024 x float], [1024 x float]* %17, i64 %18
   %20 = load i64, i64* %4, align 8
-  %21 = getelementptr inbounds [256 x float], [256 x float]* %19, i64 0, i64 %20
+  %21 = getelementptr inbounds [1024 x float], [1024 x float]* %19, i64 0, i64 %20
   store float %16, float* %21, align 4
   br label %22
 
@@ -173,7 +173,7 @@ define linkonce_odr void @_Z19initializeRandom_2DIfLm256ELm256EEvPAT1__T_([256 x
 }
 
 ; Function Attrs: noinline nounwind optnone ssp uwtable mustprogress
-define linkonce_odr void @_Z19initializeRandom_1DIfLm256EEvPT_(float* %0) #0 {
+define linkonce_odr void @_Z19initializeRandom_1DIfLm1024EEvPT_(float* %0) #0 {
   %2 = alloca float*, align 8
   %3 = alloca i64, align 8
   store float* %0, float** %2, align 8
@@ -185,7 +185,7 @@ define linkonce_odr void @_Z19initializeRandom_1DIfLm256EEvPT_(float* %0) #0 {
 
 6:                                                ; preds = %15, %1
   %7 = load i64, i64* %3, align 8
-  %8 = icmp ult i64 %7, 256
+  %8 = icmp ult i64 %7, 1024
   br i1 %8, label %9, label %18
 
 9:                                                ; preds = %6
@@ -208,7 +208,7 @@ define linkonce_odr void @_Z19initializeRandom_1DIfLm256EEvPT_(float* %0) #0 {
 }
 
 ; Function Attrs: noinline nounwind optnone ssp uwtable mustprogress
-define linkonce_odr void @_Z13initialize_1DIfLm256EEvPT_S0_(float* %0, float %1) #0 {
+define linkonce_odr void @_Z13initialize_1DIfLm1024EEvPT_S0_(float* %0, float %1) #0 {
   %3 = alloca float*, align 8
   %4 = alloca float, align 4
   %5 = alloca i64, align 8
@@ -219,7 +219,7 @@ define linkonce_odr void @_Z13initialize_1DIfLm256EEvPT_S0_(float* %0, float %1)
 
 6:                                                ; preds = %14, %2
   %7 = load i64, i64* %5, align 8
-  %8 = icmp ult i64 %7, 256
+  %8 = icmp ult i64 %7, 1024
   br i1 %8, label %9, label %17
 
 9:                                                ; preds = %6
@@ -241,17 +241,17 @@ define linkonce_odr void @_Z13initialize_1DIfLm256EEvPT_S0_(float* %0, float %1)
 }
 
 ; Function Attrs: noinline nounwind optnone ssp uwtable mustprogress
-define linkonce_odr zeroext i1 @_Z6verifyIfLm256ELm256EEbPAT1__T_PS0_S3_([256 x float]* %0, float* %1, float* %2) #0 {
+define linkonce_odr zeroext i1 @_Z6verifyIfLm1024ELm1024EEbPAT1__T_PS0_S3_([1024 x float]* %0, float* %1, float* %2) #0 {
   %4 = alloca i1, align 1
-  %5 = alloca [256 x float]*, align 8
+  %5 = alloca [1024 x float]*, align 8
   %6 = alloca float*, align 8
   %7 = alloca float*, align 8
-  %8 = alloca [256 x float], align 16
+  %8 = alloca [1024 x float], align 16
   %9 = alloca i64, align 8
   %10 = alloca i64, align 8
   %11 = alloca i64, align 8
   %12 = alloca i64, align 8
-  store [256 x float]* %0, [256 x float]** %5, align 8
+  store [1024 x float]* %0, [1024 x float]** %5, align 8
   store float* %1, float** %6, align 8
   store float* %2, float** %7, align 8
   store i64 0, i64* %9, align 8
@@ -259,12 +259,12 @@ define linkonce_odr zeroext i1 @_Z6verifyIfLm256ELm256EEbPAT1__T_PS0_S3_([256 x 
 
 13:                                               ; preds = %19, %3
   %14 = load i64, i64* %9, align 8
-  %15 = icmp ult i64 %14, 256
+  %15 = icmp ult i64 %14, 1024
   br i1 %15, label %16, label %22
 
 16:                                               ; preds = %13
   %17 = load i64, i64* %9, align 8
-  %18 = getelementptr inbounds [256 x float], [256 x float]* %8, i64 0, i64 %17
+  %18 = getelementptr inbounds [1024 x float], [1024 x float]* %8, i64 0, i64 %17
   store float 0.000000e+00, float* %18, align 4
   br label %19
 
@@ -280,7 +280,7 @@ define linkonce_odr zeroext i1 @_Z6verifyIfLm256ELm256EEbPAT1__T_PS0_S3_([256 x 
 
 23:                                               ; preds = %50, %22
   %24 = load i64, i64* %10, align 8
-  %25 = icmp ult i64 %24, 256
+  %25 = icmp ult i64 %24, 1024
   br i1 %25, label %26, label %53
 
 26:                                               ; preds = %23
@@ -289,15 +289,15 @@ define linkonce_odr zeroext i1 @_Z6verifyIfLm256ELm256EEbPAT1__T_PS0_S3_([256 x 
 
 27:                                               ; preds = %46, %26
   %28 = load i64, i64* %11, align 8
-  %29 = icmp ult i64 %28, 256
+  %29 = icmp ult i64 %28, 1024
   br i1 %29, label %30, label %49
 
 30:                                               ; preds = %27
-  %31 = load [256 x float]*, [256 x float]** %5, align 8
+  %31 = load [1024 x float]*, [1024 x float]** %5, align 8
   %32 = load i64, i64* %10, align 8
-  %33 = getelementptr inbounds [256 x float], [256 x float]* %31, i64 %32
+  %33 = getelementptr inbounds [1024 x float], [1024 x float]* %31, i64 %32
   %34 = load i64, i64* %11, align 8
-  %35 = getelementptr inbounds [256 x float], [256 x float]* %33, i64 0, i64 %34
+  %35 = getelementptr inbounds [1024 x float], [1024 x float]* %33, i64 0, i64 %34
   %36 = load float, float* %35, align 4
   %37 = load float*, float** %6, align 8
   %38 = load i64, i64* %11, align 8
@@ -305,7 +305,7 @@ define linkonce_odr zeroext i1 @_Z6verifyIfLm256ELm256EEbPAT1__T_PS0_S3_([256 x 
   %40 = load float, float* %39, align 4
   %41 = fmul float %36, %40
   %42 = load i64, i64* %10, align 8
-  %43 = getelementptr inbounds [256 x float], [256 x float]* %8, i64 0, i64 %42
+  %43 = getelementptr inbounds [1024 x float], [1024 x float]* %8, i64 0, i64 %42
   %44 = load float, float* %43, align 4
   %45 = fadd float %44, %41
   store float %45, float* %43, align 4
@@ -332,12 +332,12 @@ define linkonce_odr zeroext i1 @_Z6verifyIfLm256ELm256EEbPAT1__T_PS0_S3_([256 x 
 
 54:                                               ; preds = %68, %53
   %55 = load i64, i64* %12, align 8
-  %56 = icmp ult i64 %55, 256
+  %56 = icmp ult i64 %55, 1024
   br i1 %56, label %57, label %71
 
 57:                                               ; preds = %54
   %58 = load i64, i64* %12, align 8
-  %59 = getelementptr inbounds [256 x float], [256 x float]* %8, i64 0, i64 %58
+  %59 = getelementptr inbounds [1024 x float], [1024 x float]* %8, i64 0, i64 %58
   %60 = load float, float* %59, align 4
   %61 = load float*, float** %7, align 8
   %62 = load i64, i64* %12, align 8
@@ -441,7 +441,7 @@ define internal void @5(i32* noalias %0, i32* noalias %1, { float*, float*, i64,
 
 19:                                               ; preds = %14
   store i64 0, i64* %16, align 4
-  store i64 255, i64* %17, align 4
+  store i64 1023, i64* %17, align 4
   store i64 1, i64* %18, align 4
   %20 = call i32 @__kmpc_global_thread_num(%0* @1)
   call void @__kmpc_for_static_init_8u(%0* @1, i32 %20, i32 34, i32* %15, i64* %16, i64* %17, i64* %18, i64 1, i64 1)
@@ -482,7 +482,7 @@ define internal void @5(i32* noalias %0, i32* noalias %1, { float*, float*, i64,
 
 38:                                               ; preds = %45, %37
   %39 = phi i64 [ %57, %45 ], [ 0, %37 ]
-  %40 = icmp slt i64 %39, 256
+  %40 = icmp slt i64 %39, 1024
   br i1 %40, label %45, label %41
 
 41:                                               ; preds = %38
@@ -497,7 +497,7 @@ define internal void @5(i32* noalias %0, i32* noalias %1, { float*, float*, i64,
 
 45:                                               ; preds = %38
   %46 = extractvalue { float*, float*, i64, [2 x i64], [2 x i64] } %9, 1
-  %47 = mul i64 %39, 256
+  %47 = mul i64 %39, 1024
   %48 = add i64 %47, %36
   %49 = getelementptr float, float* %46, i64 %48
   %50 = load float, float* %49, align 4

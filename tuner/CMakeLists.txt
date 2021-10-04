@@ -8,7 +8,6 @@ set(LLVM_LINK_COMPONENTS support)
 set(CMAKE_BUILD_TYPE Debug)
 
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
-
 set(CLANG_PATH "/usr/local/bin/clang++")
 
 add_definitions(-DDEBUG -DCLANG_PATH=${CLANG_PATH}) #used in program
@@ -34,6 +33,97 @@ include(TableGen)
 
 add_custom_target(ClangTune)
 set_target_properties(ClangTune PROPERTIES FOLDER Examples)##FIXME
+
+# Macro for creating the tuner libraries
+macro(add_clang_tuner_library name)
+  cmake_parse_arguments(ARG
+    "SHARED;STATIC;INSTALL_WITH_TOOLCHAIN"
+    ""
+    "ADDITIONAL_HEADERS"
+    ${ARGN})
+  set(srcs)
+
+  ## FIXME Add XCODE and MSVC support here
+
+  if(srcs OR ARG_ADDITIONAL_HEADERS)
+    set(srcs
+      ADDITIONAL_HEADERS
+      ${srcs}
+      ${ARG_ADDITIONAL_HEADERS} # It may contain unparsed unknown args.
+      )
+  endif()
+
+  if(ARG_SHARED AND ARG_STATIC)
+    set(LIBTYPE SHARED STATIC)
+  elseif(ARG_SHARED)
+    set(LIBTYPE SHARED)
+  else()
+    # llvm_add_library ignores BUILD_SHARED_LIBS if STATIC is explicitly set,
+    # so we need to handle it here.
+    if(BUILD_SHARED_LIBS)
+      set(LIBTYPE SHARED)
+    else()
+      set(LIBTYPE STATIC)
+    endif()
+    if(NOT XCODE)
+      # The Xcode generator doesn't handle object libraries correctly.
+      list(APPEND LIBTYPE OBJECT)
+    endif()
+    set_property(GLOBAL APPEND PROPERTY CLANG_TUNER_STATIC_LIBS ${name})
+  endif()
+  llvm_add_library(${name} ${LIBTYPE} ${ARG_UNPARSED_ARGUMENTS} ${srcs})
+
+  set(libs ${name})
+  if(ARG_SHARED AND ARG_STATIC)
+    list(APPEND libs ${name}_static)
+  endif()
+
+  foreach(lib ${libs})
+    if(TARGET ${lib})
+      target_link_libraries(${lib} INTERFACE ${LLVM_COMMON_LIBS})
+
+      ## Copied + modified from AddClang.cmake
+      ##
+      if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY OR ARG_INSTALL_WITH_TOOLCHAIN)
+        set(export_to_clangtunertargets)
+        if(${lib} IN_LIST LLVM_DISTRIBUTION_COMPONENTS OR
+            "clang-libraries" IN_LIST LLVM_DISTRIBUTION_COMPONENTS OR
+            NOT LLVM_DISTRIBUTION_COMPONENTS)
+          set(export_to_clangtunertargets EXPORT ClangTunerTargets)
+          set_property(GLOBAL PROPERTY CLANG_HAS_EXPORTS True)
+        endif()
+
+        install(TARGETS ${lib}
+          COMPONENT ${lib}
+          ${export_to_clangtunertargets}
+          LIBRARY DESTINATION lib${LLVM_LIBDIR_SUFFIX}
+          ARCHIVE DESTINATION lib${LLVM_LIBDIR_SUFFIX}
+          RUNTIME DESTINATION bin)
+
+        if (NOT LLVM_ENABLE_IDE)
+          add_llvm_install_targets(install-${lib}
+                                   DEPENDS ${lib}
+                                   COMPONENT ${lib})
+        endif()
+
+        set_property(GLOBAL APPEND PROPERTY CLANG_TUNER_LIBS ${lib})
+      endif()
+      set_property(GLOBAL APPEND PROPERTY CLANG_TUNER_EXPORTS ${lib})
+    else()
+      # Add empty "phony" target
+      add_custom_target(${lib})
+    endif()
+  endforeach()
+
+  set_target_properties(${name} PROPERTIES FOLDER "ClangTuner libraries")
+#  set_clang_windows_version_resource_properties(${name})
+endmacro(add_clang_tuner_library name)
+
+macro(add_clang_tuner_executable name)
+  add_llvm_executable( ${name} ${ARGN} )
+  set_target_properties(${name} PROPERTIES FOLDER "ClangTuner executables")
+  set_clang_tuner_windows_version_resource_properties(${name})
+endmacro(add_clang_tuner_executable)
 
 macro(add_clang_tune_target name)
     add_dependencies(ClangTune ${name})
@@ -71,7 +161,8 @@ set(LIBS
         MLIRIR
         )
 
-add_subdirectory(include)
+#add_subdirectory(include)
+add_subdirectory(lib)
 
 set(MLIR_LIBS
         MLIRAffineToStandard
@@ -103,13 +194,7 @@ add_clang_tune_target(clang-tune
         OpenMPConfigurer.cpp
         OptimizationDriver.cpp
         Driver.cpp
-        mlir/Dialect.cpp
-        mlir/MLIRGen.cpp
         ParallelizingPass.cpp
-
-        DEPENDS
-        ClangTuneIncGen
-
         )
 
 

@@ -5,8 +5,7 @@
 #include "SemaCheck.h"
 #include "TypeCorrector.h"
 
-#include "ClangTune/Dialect.h"
-#include "MLIRCodeGenerator.h"
+#include "clangtuner/MLIRCodeGen/MLIRCodeGenerator.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"

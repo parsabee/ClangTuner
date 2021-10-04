@@ -57,10 +57,11 @@ class MLIRCodeGenerator : public StmtVisitor<MLIRCodeGenerator, mlir::Value> {
   // Use this for generating llvm types from c types
   ::clang::CodeGen::CodeGenModule CGModule;
 
-  // generates the mlir type of expr
+  // This module produces the MLIR type associated with an expression
   MLIRTypeGenerator typeGen;
 
-  // Storing the stack allocations
+  // This table stores the variables names (key) and the MLIR allocations
+  // (value) corresponding to them.
   llvm::ScopedHashTable<llvm::StringRef, mlir::Value> scopedHashTable;
   llvm::DenseMap<int, mlir::Value> indexConstants;
 

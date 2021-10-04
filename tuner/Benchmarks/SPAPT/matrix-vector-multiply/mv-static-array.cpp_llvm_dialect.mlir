@@ -20,12 +20,12 @@ module attributes {llvm.data_layout = ""}  {
     %17 = llvm.insertvalue %arg14, %16[2] : !llvm.struct<(ptr<f32>, ptr<f32>, i64, array<1 x i64>, array<1 x i64>)>
     %18 = llvm.insertvalue %arg15, %17[3, 0] : !llvm.struct<(ptr<f32>, ptr<f32>, i64, array<1 x i64>, array<1 x i64>)>
     %19 = llvm.insertvalue %arg16, %18[4, 0] : !llvm.struct<(ptr<f32>, ptr<f32>, i64, array<1 x i64>, array<1 x i64>)>
-    %20 = llvm.mlir.constant(256 : index) : i64
+    %20 = llvm.mlir.constant(1024 : index) : i64
     %21 = llvm.mlir.constant(0 : index) : i64
     %22 = llvm.mlir.constant(1 : index) : i64
     omp.parallel {
       omp.wsloop (%arg17) : i64 = (%21) to (%20) step (%22) {
-        %23 = llvm.mlir.constant(256 : index) : i64
+        %23 = llvm.mlir.constant(1024 : index) : i64
         %24 = llvm.mlir.constant(0 : index) : i64
         %25 = llvm.mlir.constant(1 : index) : i64
         llvm.br ^bb1(%24 : i64)
@@ -34,7 +34,7 @@ module attributes {llvm.data_layout = ""}  {
         llvm.cond_br %27, ^bb2, ^bb3
       ^bb2:  // pred: ^bb1
         %28 = llvm.extractvalue %7[1] : !llvm.struct<(ptr<f32>, ptr<f32>, i64, array<2 x i64>, array<2 x i64>)>
-        %29 = llvm.mlir.constant(256 : index) : i64
+        %29 = llvm.mlir.constant(1024 : index) : i64
         %30 = llvm.mul %26, %29  : i64
         %31 = llvm.add %30, %arg17  : i64
         %32 = llvm.getelementptr %28[%31] : (!llvm.ptr<f32>, i64) -> !llvm.ptr<f32>

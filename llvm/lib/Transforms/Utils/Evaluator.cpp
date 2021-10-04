@@ -127,7 +127,7 @@ isSimpleEnoughValueToCommit(Constant *C,
 /// another pointer type, we punt.  We basically just support direct accesses to
 /// globals and GEP's of globals.  This should be kept up to date with
 /// CommitValueTo.
-static bool isSimpleEnoughPointerToCommit(Constant *C) {
+static bool isSimpleEnoughPointerToCommit(Constant *C, const DataLayout &DL) {
   // Conservatively, avoid aggregate types. This is because we don't
   // want to worry about them partially overlapping other stores.
   if (!cast<PointerType>(C->getType())->getElementType()->isSingleValueType())
@@ -157,13 +157,14 @@ static bool isSimpleEnoughPointerToCommit(Constant *C) {
       if (!CE->isGEPWithNoNotionalOverIndexing())
         return false;
 
-      return ConstantFoldLoadThroughGEPConstantExpr(GV->getInitializer(), CE);
-
-    // A constantexpr bitcast from a pointer to another pointer is a no-op,
-    // and we know how to evaluate it by moving the bitcast from the pointer
-    // operand to the value operand.
+      return ConstantFoldLoadThroughGEPConstantExpr(
+          GV->getInitializer(), CE,
+          cast<GEPOperator>(CE)->getResultElementType(), DL);
     } else if (CE->getOpcode() == Instruction::BitCast &&
                isa<GlobalVariable>(CE->getOperand(0))) {
+      // A constantexpr bitcast from a pointer to another pointer is a no-op,
+      // and we know how to evaluate it by moving the bitcast from the pointer
+      // operand to the value operand.
       // Do not allow weak/*_odr/linkonce/dllimport/dllexport linkage or
       // external globals.
       return cast<GlobalVariable>(CE->getOperand(0))->hasUniqueInitializer();
@@ -173,16 +174,16 @@ static bool isSimpleEnoughPointerToCommit(Constant *C) {
   return false;
 }
 
-/// Apply 'Func' to Ptr. If this returns nullptr, introspect the pointer's
-/// type and walk down through the initial elements to obtain additional
-/// pointers to try. Returns the first non-null return value from Func, or
-/// nullptr if the type can't be introspected further.
+/// Apply \p TryLoad to Ptr. If this returns \p nullptr, introspect the
+/// pointer's type and walk down through the initial elements to obtain
+/// additional pointers to try. Returns the first non-null return value from
+/// \p TryLoad, or \p nullptr if the type can't be introspected further.
 static Constant *
 evaluateBitcastFromPtr(Constant *Ptr, const DataLayout &DL,
                        const TargetLibraryInfo *TLI,
-                       std::function<Constant *(Constant *)> Func) {
+                       std::function<Constant *(Constant *)> TryLoad) {
   Constant *Val;
-  while (!(Val = Func(Ptr))) {
+  while (!(Val = TryLoad(Ptr))) {
     // If Ty is a non-opaque struct, we can convert the pointer to the struct
     // into a pointer to its first member.
     // FIXME: This could be extended to support arrays as well.
@@ -207,12 +208,14 @@ static Constant *getInitializer(Constant *C) {
 
 /// Return the value that would be computed by a load from P after the stores
 /// reflected by 'memory' have been performed.  If we can't decide, return null.
-Constant *Evaluator::ComputeLoadResult(Constant *P) {
+Constant *Evaluator::ComputeLoadResult(Constant *P, Type *Ty) {
   // If this memory location has been recently stored, use the stored value: it
   // is the most up-to-date.
-  auto findMemLoc = [this](Constant *Ptr) { return MutatedMemory.lookup(Ptr); };
+  auto TryFindMemLoc = [this](Constant *Ptr) {
+    return MutatedMemory.lookup(Ptr);
+  };
 
-  if (Constant *Val = findMemLoc(P))
+  if (Constant *Val = TryFindMemLoc(P))
     return Val;
 
   // Access it.
@@ -227,7 +230,7 @@ Constant *Evaluator::ComputeLoadResult(Constant *P) {
     // Handle a constantexpr getelementptr.
     case Instruction::GetElementPtr:
       if (auto *I = getInitializer(CE->getOperand(0)))
-        return ConstantFoldLoadThroughGEPConstantExpr(I, CE);
+        return ConstantFoldLoadThroughGEPConstantExpr(I, CE, Ty, DL);
       break;
     // Handle a constantexpr bitcast.
     case Instruction::BitCast:
@@ -236,7 +239,7 @@ Constant *Evaluator::ComputeLoadResult(Constant *P) {
       // If it hasn't, we may still be able to find a stored pointer by
       // introspecting the type.
       Constant *Val =
-          evaluateBitcastFromPtr(CE->getOperand(0), DL, TLI, findMemLoc);
+          evaluateBitcastFromPtr(CE->getOperand(0), DL, TLI, TryFindMemLoc);
       if (!Val)
         Val = getInitializer(CE->getOperand(0));
       if (Val)
@@ -340,7 +343,7 @@ bool Evaluator::EvaluateBlock(BasicBlock::iterator CurInst, BasicBlock *&NextBB,
         Ptr = FoldedPtr;
         LLVM_DEBUG(dbgs() << "; To: " << *Ptr << "\n");
       }
-      if (!isSimpleEnoughPointerToCommit(Ptr)) {
+      if (!isSimpleEnoughPointerToCommit(Ptr, DL)) {
         // If this is too complex for us to commit, reject it.
         LLVM_DEBUG(
             dbgs() << "Pointer is too complex for us to evaluate store.");
@@ -368,9 +371,17 @@ bool Evaluator::EvaluateBlock(BasicBlock::iterator CurInst, BasicBlock *&NextBB,
           // legal. If it's not, we can try introspecting the type to find a
           // legal conversion.
 
-          auto castValTy = [&](Constant *P) -> Constant * {
-            Type *Ty = cast<PointerType>(P->getType())->getElementType();
-            if (Constant *FV = ConstantFoldLoadThroughBitcast(Val, Ty, DL)) {
+          auto TryCastValTy = [&](Constant *P) -> Constant * {
+            // The conversion is illegal if the store is wider than the
+            // pointee proposed by `evaluateBitcastFromPtr`, since that would
+            // drop stores to other struct elements when the caller attempts to
+            // look through a struct's 0th element.
+            Type *NewTy = cast<PointerType>(P->getType())->getElementType();
+            Type *STy = Val->getType();
+            if (DL.getTypeSizeInBits(NewTy) < DL.getTypeSizeInBits(STy))
+              return nullptr;
+
+            if (Constant *FV = ConstantFoldLoadThroughBitcast(Val, NewTy, DL)) {
               Ptr = P;
               return FV;
             }
@@ -378,7 +389,7 @@ bool Evaluator::EvaluateBlock(BasicBlock::iterator CurInst, BasicBlock *&NextBB,
           };
 
           Constant *NewVal =
-              evaluateBitcastFromPtr(CE->getOperand(0), DL, TLI, castValTy);
+              evaluateBitcastFromPtr(CE->getOperand(0), DL, TLI, TryCastValTy);
           if (!NewVal) {
             LLVM_DEBUG(dbgs() << "Failed to bitcast constant ptr, can not "
                                  "evaluate.\n");
@@ -450,7 +461,7 @@ bool Evaluator::EvaluateBlock(BasicBlock::iterator CurInst, BasicBlock *&NextBB,
                              "folding: "
                           << *Ptr << "\n");
       }
-      InstResult = ComputeLoadResult(Ptr);
+      InstResult = ComputeLoadResult(Ptr, LI->getType());
       if (!InstResult) {
         LLVM_DEBUG(
             dbgs() << "Failed to compute load result. Can not evaluate load."
@@ -496,7 +507,8 @@ bool Evaluator::EvaluateBlock(BasicBlock::iterator CurInst, BasicBlock *&NextBB,
           }
           Constant *Ptr = getVal(MSI->getDest());
           Constant *Val = getVal(MSI->getValue());
-          Constant *DestVal = ComputeLoadResult(getVal(Ptr));
+          Constant *DestVal =
+              ComputeLoadResult(getVal(Ptr), MSI->getValue()->getType());
           if (Val->isNullValue() && DestVal && DestVal->isNullValue()) {
             // This memset is a no-op.
             LLVM_DEBUG(dbgs() << "Ignoring no-op memset.\n");
@@ -564,6 +576,7 @@ bool Evaluator::EvaluateBlock(BasicBlock::iterator CurInst, BasicBlock *&NextBB,
                        << "Stripped pointer casts for alias analysis for "
                           "intrinsic call.\n");
             StrippedPointerCastsForAliasAnalysis = true;
+            InstResult = ConstantExpr::getBitCast(InstResult, II->getType());
           } else {
             LLVM_DEBUG(dbgs() << "Unknown intrinsic. Cannot evaluate.\n");
             return false;

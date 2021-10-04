@@ -1,5 +1,7 @@
 ; ModuleID = 'LLVMDialectModule'
 source_filename = "LLVMDialectModule"
+target datalayout = "e-m:o-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128"
+target triple = "x86_64-apple-macosx10.15.0"
 
 %struct.ident_t = type { i32, i32, i32, i32, i8* }
 
@@ -78,7 +80,7 @@ omp.par.region1:                                  ; preds = %omp.par.region
 
 omp_loop.preheader:                               ; preds = %omp.par.region1
   store i64 0, i64* %p.lowerbound, align 4
-  store i64 255, i64* %p.upperbound, align 4
+  store i64 1023, i64* %p.upperbound, align 4
   store i64 1, i64* %p.stride, align 4
   %omp_global_thread_num5 = call i32 @__kmpc_global_thread_num(%struct.ident_t* @3)
   call void @__kmpc_for_static_init_8u(%struct.ident_t* @3, i32 %omp_global_thread_num5, i32 34, i32* %p.lastiter, i64* %p.lowerbound, i64* %p.upperbound, i64* %p.stride, i64 1, i64 1)
@@ -119,7 +121,7 @@ omp.wsloop.region:                                ; preds = %omp_loop.body
 
 omp.wsloop.region2:                               ; preds = %omp.wsloop.region3, %omp.wsloop.region
   %11 = phi i64 [ %24, %omp.wsloop.region3 ], [ 0, %omp.wsloop.region ], !dbg !29
-  %12 = icmp slt i64 %11, 256, !dbg !32
+  %12 = icmp slt i64 %11, 1024, !dbg !32
   br i1 %12, label %omp.wsloop.region3, label %omp.wsloop.region4, !dbg !33
 
 omp.wsloop.region4:                               ; preds = %omp.wsloop.region2
@@ -134,7 +136,7 @@ omp_loop.inc:                                     ; preds = %omp.wsloop.exit
 
 omp.wsloop.region3:                               ; preds = %omp.wsloop.region2
   %13 = extractvalue { float*, float*, i64, [2 x i64], [2 x i64] } %1, 1, !dbg !35
-  %14 = mul i64 %11, 256, !dbg !36
+  %14 = mul i64 %11, 1024, !dbg !36
   %15 = add i64 %14, %10, !dbg !37
   %16 = getelementptr float, float* %13, i64 %15, !dbg !38
   %17 = load float, float* %16, align 4, !dbg !39

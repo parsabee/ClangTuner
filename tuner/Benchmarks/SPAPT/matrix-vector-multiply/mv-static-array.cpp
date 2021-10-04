@@ -1,13 +1,13 @@
 #include "../utils.hpp"
-
+#include <iostream>
 /// These parameters can be defined with -D flag to the compiler
 
 #ifndef N
-#define N 256
+#define N 1024
 #endif
 
 #ifndef M
-#define M 256
+#define M 1024
 #endif
 
 #ifndef TYPE
@@ -22,14 +22,17 @@
 /// FIXME Currently templated declarations are not implemented in the MLIRCodeGenerator,
 /// this will be a generic operation in the future
 void mat_vec_mult(TYPE a[M][N], TYPE b[N], TYPE c[M]) {
-  [[mlir::parallel]]
-  [[mlir::opt("--convert-scf-to-openmp",
-              "--convert-scf-to-std",
-              "--convert-openmp-to-llvm",
-              "--convert-std-to-llvm")]]
+  TYPE *ap = (TYPE *)a;
+  TYPE *bp = (TYPE *)b;
+  TYPE *cp = (TYPE *)c;
+  // [[mlir::parallel]]
+  // [[mlir::opt("--convert-scf-to-openmp",
+  //             "--convert-scf-to-std",
+  //             "--convert-openmp-to-llvm",
+  //             "--convert-std-to-llvm")]]
   for (size_t i = 0; i < M; i++) {
     for (size_t j = 0; j < N; j++) {
-      c[i] += a[i][j] * b[j];
+      cp[i] += ap[i * M + j] * bp[j];
     }
   }
 }
@@ -46,6 +49,7 @@ bool verify(T a[m][n], T b[n], T res[m]) {
     }
   }
   for (size_t i = 0; i < m; i++) {
+    std::cout << c[i] << ", " << res[i] << "\n";
     if (c[i] != res[i]) {
       return false;
     }

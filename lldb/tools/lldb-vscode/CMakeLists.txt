@@ -32,6 +32,7 @@ add_lldb_tool(lldb-vscode
   IOStream.cpp
   JSONUtils.cpp
   LLDBUtils.cpp
+  OutputRedirector.cpp
   ProgressEvent.cpp
   RunInTerminal.cpp
   SourceBreakpoint.cpp
@@ -39,7 +40,6 @@ add_lldb_tool(lldb-vscode
 
   LINK_LIBS
     liblldb
-    ${host_lib}
     ${extra_libs}
 
   LINK_COMPONENTS
