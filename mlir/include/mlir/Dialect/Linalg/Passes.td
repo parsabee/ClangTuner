@@ -178,8 +178,8 @@ def LinalgMemoryFootprintReduction : FunctionPass<"linalg-memory-footprint-reduc
   let summary = "Brings the LinalgOps memory footprint below maxMemFootprint";
   let constructor = "mlir::createLinalgMemoryFootprintReductionPass()";
   let options = [
-    ListOption<"maxMemFootprint", "linalg-max-memory-footprint", "int64_t", 
-               "Max memory footprint in bytes", "llvm::cl::Optional">
+    Option<"maxMemFootprint", "linalg-max-memory-footprint", "int64_t", 
+            /*default=*/"false", "Max memory footprint in bytes">
   ];
   let dependentDialects = [
     "AffineDialect",

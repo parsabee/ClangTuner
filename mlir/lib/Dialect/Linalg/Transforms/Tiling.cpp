@@ -23,8 +23,7 @@
 #include "mlir/Transforms/FoldUtils.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Pass/PassManager.h"
-
-#include "llvm/Support/CommandLine.h"
+#include <numeric>
 
 using namespace mlir;
 using namespace mlir::linalg;
@@ -502,23 +501,14 @@ static void insertTilingPatterns(RewritePatternSet &patterns,
   patterns.add<PadTensorOpTilingPattern>(patterns.getContext(), options);
 }
 
-static void applyExtractSliceOfPadTensorSwapPattern(FuncOp funcOp) {
-  MLIRContext *ctx = funcOp.getContext();
+static void applyExtractSliceOfPadTensorSwapPattern(FuncOp op) {
+  MLIRContext *ctx = op.getContext();
   RewritePatternSet patterns(ctx);
   patterns.add<ExtractSliceOfPadTensorSwapPattern>(patterns.getContext());
-  (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
   (void)applyPatternsAndFoldGreedily(
-      funcOp, getLinalgTilingCanonicalizationPatterns(ctx));
+      op, getLinalgTilingCanonicalizationPatterns(ctx));
 }
-
-// static void applyExtractSliceOfPadTensorSwapPattern(LinalgOp op) {
-//   MLIRContext *ctx = op.getContext();
-//   RewritePatternSet patterns(ctx);
-//   patterns.add<ExtractSliceOfPadTensorSwapPattern>(patterns.getContext());
-//   (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
-//   (void)applyPatternsAndFoldGreedily(
-//       op, getLinalgTilingCanonicalizationPatterns(ctx));
-// }
 
 static void
 applyTilingToLoopPatterns(LinalgTilingLoopType loopType, FuncOp funcOp,
@@ -545,42 +535,13 @@ applyTilingToLoopPatterns(LinalgTilingLoopType loopType, FuncOp funcOp,
   applyExtractSliceOfPadTensorSwapPattern(funcOp);
 }
 
-// static void
-// applyTilingToLoopPatterns(LinalgTilingLoopType loopType, LinalgOp op,
-//                           ArrayRef<int64_t> tileSizes,
-//                           ArrayRef<StringRef> distributionTypes = {}) {
-//   auto options = LinalgTilingOptions()
-//                      .setTileSizes(tileSizes)
-//                      .setLoopType(loopType)
-//                      .setDistributionTypes(distributionTypes);
-//   MLIRContext *ctx = op.getContext();
-//   RewritePatternSet patterns(ctx);
-//   insertTilingPatterns(patterns, options);
-//   scf::populateSCFForLoopCanonicalizationPatterns(patterns);
-//   (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
-//   (void)applyPatternsAndFoldGreedily(
-//       op, getLinalgTilingCanonicalizationPatterns(ctx));
-//   // Drop the marker.
-//   op->removeAttr(LinalgTransforms::kLinalgTransformMarker);
-
-//   // Apply swap pattern after generating loop nest and running
-//   // canonicalizations.
-//   applyExtractSliceOfPadTensorSwapPattern(op);
-// }
-
 /// Calculates the size (in bytes) of a ranked tensor
 static inline size_t getSizeFromShape(llvm::ArrayRef<int64_t> shape,
                                       size_t elementBitWidth) {
   assert(elementBitWidth % 8 == 0 && "BitWidth has to be divisible by 8");
-  size_t numBytes = 1ul;
-  for (auto s : shape)
-    numBytes *= s;
+  auto numBytes =
+      std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<>());
   return numBytes * (elementBitWidth / 8);
-}
-
-static constexpr inline int64_t ceilDiv(int64_t Numerator,
-                                        int64_t Denominator) {
-  return 1 + ((Numerator - 1) / Denominator);
 }
 
 struct RankedOperands {
@@ -588,21 +549,16 @@ struct RankedOperands {
     mlir::ArrayRef<int64_t> shape;
     size_t bitWidth;
   };
-  llvm::SmallVector<Operand> ops;
+  llvm::SmallVector<Operand, 3> ops;
   bool isParallelizable;
 };
 
-template<typename Op> // TODO: add type trait to make sure Op has `getOperands()'
-RankedOperands getOperands(Op &op) {
+template<typename OpTy> // TODO: add type trait to make sure Op has `getOperands()'
+RankedOperands getOperands(OpTy &op) {
   llvm::SmallVector<RankedOperands::Operand> rankedOperands;
   bool isParallelizable = true;
   for (auto val : op.getOperands()) {
-    if (auto rankedTensor = val.getType()
-                                .template dyn_cast<mlir::RankedTensorType>()) {
-      rankedOperands.push_back(
-          {rankedTensor.getShape(), rankedTensor.getElementTypeBitWidth()});
-      isParallelizable = false;
-    } else if (auto rankedMemRef = val.getType()
+    if (auto rankedMemRef = val.getType()
                                        .template dyn_cast<mlir::MemRefType>()) {
       rankedOperands.push_back(
           {rankedMemRef.getShape(), rankedMemRef.getElementTypeBitWidth()});
@@ -612,19 +568,6 @@ RankedOperands getOperands(Op &op) {
   return {std::move(rankedOperands), isParallelizable};
 }
 
-
-static inline constexpr int64_t findNextPowerOfTwo(int64_t num) {
-  int64_t p = 1;
-  while (p <= num)
-    p <<= 1;
-  return p;
-}
-
-static inline constexpr int64_t findPreviousPowerOfTwo(int64_t num) {
-  int64_t p = findNextPowerOfTwo(num);
-  return p >>= 1;
-}
-
 static llvm::SmallVector<int64_t> findNewShape(llvm::ArrayRef<int64_t> oldShape,
                                                size_t bitWidth,
                                                size_t maxTensorSize) {
@@ -632,13 +575,13 @@ static llvm::SmallVector<int64_t> findNewShape(llvm::ArrayRef<int64_t> oldShape,
   llvm::SmallVector<int64_t> newShape(oldShape.begin(), oldShape.end());
   for (size_t i = 0, end = oldShape.size(); i < end; i++) {
     auto curSize = getSizeFromShape(newShape, bitWidth);
-    auto tileSize = ceilDiv(curSize, maxTensorSize);
-    if (oldShape[i] >= tileSize) {
-      newShape[i] = oldShape[i] / tileSize;
+    int64_t tileFactor = curSize/maxTensorSize;
+    if (oldShape[i] >= tileFactor) {
+      auto n = oldShape[i] / tileFactor;
+      newShape[i] = llvm::PowerOf2Floor(n);
       break;
-    } else {
-      newShape[i] = 1;
     }
+    newShape[i] = 1;
   }
   return newShape;
 }
@@ -648,8 +591,8 @@ struct TilingStrategy {
   bool isParallelizable;
 };
 
-template<typename Op> // TODO: add type trait to make sure Op is the type we want
-static TilingStrategy getTilingStrategy(Op &op,
+template<typename OpTy> // TODO: add type trait to make sure Op is the type we want
+static TilingStrategy getTilingStrategy(OpTy &op,
                                         int64_t maxMemoryFootprint) {
   auto operands = getOperands(op);
   TilingStrategy ts;
@@ -659,11 +602,33 @@ static TilingStrategy getTilingStrategy(Op &op,
     return {{}, false};
 
   auto desiredFootprintPerTensor =
-      findPreviousPowerOfTwo(maxMemoryFootprint / numRanked);
+      maxMemoryFootprint / numRanked;
   auto &rankedOp = *operands.ops.begin();
   return {findNewShape(rankedOp.shape, rankedOp.bitWidth,
                        desiredFootprintPerTensor),
           operands.isParallelizable};
+}
+
+static void applyTilingToGenericOps(FuncOp funcOp, int64_t maxFootprint) {
+  MLIRContext *ctx = funcOp.getContext();
+  auto genericOps = llvm::make_filter_range(funcOp.getRegion().getOps(), 
+            [](Operation &op) { return isa<mlir::linalg::GenericOp>(op); });
+  for (auto &op : genericOps) {
+    auto ts = getTilingStrategy(op, maxFootprint);
+    auto options = LinalgTilingOptions()
+                    .setTileSizes(ts.tilingShape)
+                    .setLoopType(LinalgTilingLoopType::ParallelLoops);
+
+    RewritePatternSet patterns(ctx);
+    insertTilingPatterns(patterns, options);
+    scf::populateSCFForLoopCanonicalizationPatterns(patterns);
+    bool erased;
+    (void)applyOpPatternsAndFold(&op, std::move(patterns), &erased);
+    // Drop the marker.
+    op.walk([](LinalgOp op) {
+      op->removeAttr(LinalgTransforms::kLinalgTransformMarker);
+    });
+  }
 }
 
 namespace {
@@ -719,28 +684,15 @@ struct LinalgMemoryFootprintReductionPass
 
   void runOnFunction() override {
     // Apply tiling patterns for each linalg op here
-  }
-};
-
-class MemoryFootPrintReducePass
-    : public mlir::PassWrapper<MemoryFootPrintReducePass,
-                               mlir::OperationPass<mlir::FuncOp>> {
-  int64_t maxFootprint;
-
-public:
-  explicit MemoryFootPrintReducePass(int64_t maxFootprint)
-      : maxFootprint(maxFootprint) {}
-
-  void runOnOperation() override {
     auto funcOp = getOperation();
     auto &region = funcOp.getRegion();
     auto genericOps = llvm::make_filter_range(region.getOps(), [](Operation &op) {
       return isa<mlir::linalg::GenericOp>(op);
     });
-    
     OpPassManager pm("builtin.func");
+    // This is wrong, won't work on each generic op
     for (auto &op : genericOps) {
-      auto ts = getTilingStrategy(op, maxFootprint);
+      auto ts = getTilingStrategy(op, maxMemFootprint);
       if (ts.isParallelizable) {
         pm.addPass(mlir::createLinalgTilingToParallelLoopsPass(ts.tilingShape));
       } else {
@@ -773,9 +725,4 @@ mlir::createLinalgTilingToTiledLoopPass(ArrayRef<int64_t> tileSizes,
 std::unique_ptr<OperationPass<FuncOp>>
 mlir::createLinalgMemoryFootprintReductionPass(int64_t maxFootprint) {
   return std::make_unique<LinalgMemoryFootprintReductionPass>(maxFootprint);
-}
-
-std::unique_ptr<OperationPass<FuncOp>>
-mlir::createMemoryFootPrintReducePass(int64_t maxFootprint) {
-  return std::make_unique<MemoryFootPrintReducePass>(maxFootprint);
 }
