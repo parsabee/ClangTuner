@@ -174,12 +174,27 @@ def LinalgTiling : FunctionPass<"linalg-tile"> {
   ];
 }
 
+def LinalgTileHinter : FunctionPass<"linalg-tile-hint"> {
+  let summary = "Adds tiling hints to linalg operation for reducing the footprint of the operation";
+  let constructor = "mlir::createLinalgTileHinterPass()";
+  let options = [
+    Option<"maxMemFootprint", "linalg-max-mem-footprint", "int64_t", 
+            /*default=*/"0", "Maximum memory footprint in bytes">
+  ];
+  let dependentDialects = [
+    "AffineDialect",
+    "linalg::LinalgDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
+  ];
+}
+
 def LinalgMemoryFootprintReduction : FunctionPass<"linalg-memory-footprint-reduce"> {
   let summary = "Brings the LinalgOps memory footprint below maxMemFootprint";
   let constructor = "mlir::createLinalgMemoryFootprintReductionPass()";
   let options = [
     Option<"maxMemFootprint", "linalg-max-memory-footprint", "int64_t", 
-            /*default=*/"false", "Max memory footprint in bytes">
+            /*default=*/"0", "Maximum memory footprint in bytes">
   ];
   let dependentDialects = [
     "AffineDialect",

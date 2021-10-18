@@ -513,7 +513,7 @@ LogicalResult mlir::applyOpPatternsAndFold(
   LogicalResult converged =
       driver.simplifyLocally(op, config.maxIterations, opErased);
   if (erased)
-    *erased = opErased;
+    *erased = opErased;  
   LLVM_DEBUG(if (failed(converged)) {
     llvm::dbgs() << "The pattern rewrite doesn't converge after scanning "
                  << config.maxIterations << " times";
