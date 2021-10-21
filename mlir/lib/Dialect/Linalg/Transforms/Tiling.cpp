@@ -22,8 +22,8 @@
 #include "mlir/IR/AffineMap.h"
 #include "mlir/Transforms/FoldUtils.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "mlir/Pass/PassManager.h"
-#include <numeric>
+
+#include "llvm/Support/CommandLine.h"
 
 using namespace mlir;
 using namespace mlir::linalg;
@@ -535,129 +535,6 @@ applyTilingToLoopPatterns(LinalgTilingLoopType loopType, FuncOp funcOp,
   applyExtractSliceOfPadTensorSwapPattern(funcOp);
 }
 
-static void
-applyTilingToLoopPatterns(LinalgTilingLoopType loopType, FuncOp funcOp,
-                          TileSizeComputationFunction tileCompFunc,
-                          ArrayRef<StringRef> distributionTypes = {}) {
-  auto options = LinalgTilingOptions()
-                     .setTileSizeComputationFunction(tileCompFunc)
-                     .setLoopType(loopType)
-                     .setDistributionTypes(distributionTypes);
-  MLIRContext *ctx = funcOp.getContext();
-  RewritePatternSet patterns(ctx);
-  patterns.add<LinalgTilingPattern<GenericOp>>(
-    ctx, options,
-    LinalgTransformationFilter(ArrayRef<Identifier>{},
-                               Identifier::get("tiled-size", ctx)));
-  (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
-  // Drop the marker.
-  funcOp.walk([](LinalgOp op) {
-    op->removeAttr(LinalgTransforms::kLinalgTransformMarker);
-  });
-}
-
-/// Calculates the size (in bytes) of a ranked tensor
-static inline size_t getSizeFromShape(llvm::ArrayRef<int64_t> shape,
-                                      size_t elementBitWidth) {
-  assert(elementBitWidth % 8 == 0 && "BitWidth has to be divisible by 8");
-  auto elementSize = elementBitWidth / 8;
-  return std::accumulate(shape.begin(), shape.end(), 
-                         elementSize, std::multiplies<>());
-}
-
-struct RankedOperands {
-  struct Operand {
-    mlir::ArrayRef<int64_t> shape;
-    size_t bitWidth;
-  };
-  SmallVector<Operand> inputs;
-  SmallVector<Operand> outputs;
-};
-
-RankedOperands getOperands(linalg::LinalgOp op) {
-  auto findRankedOperands = [](linalg::OpOperandVector operandVector)
-      -> SmallVector<RankedOperands::Operand> {
-    SmallVector<RankedOperands::Operand> rankedOperands;
-    for (auto op : operandVector) {
-      if (auto rankedMemRef =
-              op->get().getType().dyn_cast<mlir::MemRefType>()) {
-        rankedOperands.push_back(
-            {rankedMemRef.getShape(), rankedMemRef.getElementTypeBitWidth()});
-      } else {
-        return {};
-      }
-    }
-    return rankedOperands;
-  };
-  return {findRankedOperands(op.getInputOperands()),
-          findRankedOperands(op.getOutputOperands())};
-}
-
-static llvm::SmallVector<int64_t> findNewShape(llvm::ArrayRef<int64_t> oldShape,
-                                               size_t bitWidth,
-                                               size_t maxTensorSize) {
-
-  llvm::SmallVector<int64_t> newShape(oldShape.begin(), oldShape.end());
-  for (size_t i = 0, end = oldShape.size(); i < end; i++) {
-    auto curSize = getSizeFromShape(newShape, bitWidth);
-    int64_t tileFactor = curSize/maxTensorSize;
-    if (oldShape[i] >= tileFactor) {
-      auto n = oldShape[i] / tileFactor;
-      newShape[i] = llvm::PowerOf2Floor(n);
-      break;
-    }
-    newShape[i] = 1;
-  }
-  return newShape;
-}
-
-static llvm::SmallVector<int64_t> getTilingShape(GenericOp op,
-                                                 int64_t maxMemoryFootprint) {
-  auto operands = getOperands(op);
-
-  // We can't tile if we have unranked stuff
-  if (operands.inputs.empty() || operands.outputs.empty())
-    return {};
-
-  auto opSizeFold = [](size_t size, RankedOperands::Operand &op) {
-    return size + getSizeFromShape(op.shape, op.bitWidth);
-  };
-
-  auto getOperandsSize =
-      [opSizeFold](SmallVector<RankedOperands::Operand> &ops) {
-        return std::accumulate(ops.begin(), ops.end(), 0, opSizeFold);
-      };
-
-  int64_t inputSize = getOperandsSize(operands.inputs),
-          outputSize = getOperandsSize(operands.outputs);
-  int64_t totalSize = inputSize + outputSize;
-  // If the total mem footprint is already below max, we're done
-  if (totalSize < maxMemoryFootprint)
-    return {};
-
-  int64_t desiredFootprintPerTensor =
-      maxMemoryFootprint/(operands.inputs.size() + operands.outputs.size());
-
-  if (!desiredFootprintPerTensor)
-    return {};
-
-  auto &rankedOp = *operands.outputs.begin();
-  return {findNewShape(rankedOp.shape, rankedOp.bitWidth,
-                       desiredFootprintPerTensor)};
-}
-
-static void setTileHintAttributes(FuncOp funcOp, int64_t maxFootprint) {
-  MLIRContext *ctx = funcOp.getContext();
-  auto genericOps = llvm::make_filter_range(funcOp.getRegion().getOps(), 
-            [](Operation &op) { return isa<mlir::linalg::GenericOp>(op); });
-  mlir::OpBuilder builder(ctx);
-  for (auto &op: genericOps) {
-    auto ts = getTilingShape(cast<GenericOp>(op), maxFootprint);
-    if (!ts.empty())
-      op.setAttr("tile_hint", builder.getI64ArrayAttr(ts));
-  }
-}
-
 namespace {
 struct LinalgTilingPass : public LinalgTilingBase<LinalgTilingPass> {
   LinalgTilingPass() = default;
@@ -701,52 +578,6 @@ struct LinalgTilingToTiledLoopsPass
   }
 };
 
-struct LinalgTileHinterPass
-    : public LinalgTileHinterBase<LinalgTileHinterPass> {
-  LinalgTileHinterPass() = default;
-  LinalgTileHinterPass(int64_t maxFootprint) {
-    maxMemFootprint = maxFootprint;
-  }
-
-  void runOnFunction() override {
-    if (maxMemFootprint <= 0)
-      return;
-
-    setTileHintAttributes(getOperation(), maxMemFootprint);
-  }
-};
-
-struct LinalgMemoryFootprintReductionPass
-    : public LinalgMemoryFootprintReductionBase<
-                              LinalgMemoryFootprintReductionPass> {
-  LinalgMemoryFootprintReductionPass() = default;
-  LinalgMemoryFootprintReductionPass(int64_t maxFootprint) {
-    maxMemFootprint = maxFootprint;
-  }
-
-  void runOnFunction() override {
-    // Apply tiling patterns for each linalg op here
-    if (maxMemFootprint <= 0)
-      return;
-
-    applyTilingToLoopPatterns(
-        LinalgTilingLoopType::ParallelLoops, getFunction(),
-        // Tile sile computation function
-        [this](OpBuilder &builder, Operation *op) -> SmallVector<Value, 4> {
-          if (auto genOp = dyn_cast<GenericOp>(op)) {
-            // Get the appropriate tiling shape for this generic op, map them to mlir value
-            return llvm::to_vector<4>(llvm::map_range(
-                getTilingShape(genOp, maxMemFootprint),
-                [&](int64_t s) -> Value {
-                  return builder.create<ConstantIndexOp>(op->getLoc(), s);
-                }));
-          }
-          // No changes
-          return {};
-        });
-  }
-};
-
 } // namespace
 
 std::unique_ptr<OperationPass<FuncOp>>
@@ -764,14 +595,4 @@ mlir::createLinalgTilingToTiledLoopPass(ArrayRef<int64_t> tileSizes,
                                         ArrayRef<StringRef> distributionTypes) {
   return std::make_unique<LinalgTilingToTiledLoopsPass>(tileSizes,
                                                         distributionTypes);
-}
-
-std::unique_ptr<OperationPass<FuncOp>>
-mlir::createLinalgTileHinterPass(int64_t maxFootprint) {
-  return std::make_unique<LinalgTileHinterPass>(maxFootprint);
-}
-
-std::unique_ptr<OperationPass<FuncOp>>
-mlir::createLinalgMemoryFootprintReductionPass(int64_t maxFootprint) {
-  return std::make_unique<LinalgMemoryFootprintReductionPass>(maxFootprint);
 }
