@@ -1,0 +1,62 @@
+Performing C++ SOURCE FILE Test CXX_SUPPORTS_CLASS_MEMACCESS_FLAG failed with the following output:
+Change Dir: /Users/parsabagheri/Development/llvm-project/mlirBuild/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/local/bin/ninja cmTC_d4956 && [1/2] Building CXX object CMakeFiles/cmTC_d4956.dir/src.cxx.o
+warning: unknown warning option '-Wclass-memaccess'; did you mean '-Wclass-varargs'? [-Wunknown-warning-option]
+1 warning generated.
+[2/2] Linking CXX executable cmTC_d4956
+
+
+Source file was:
+int main() { return 0; }
+Performing C++ SOURCE FILE Test CXX_SUPPORTS_SUGGEST_OVERRIDE_FLAG failed with the following output:
+Change Dir: /Users/parsabagheri/Development/llvm-project/mlirBuild/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/local/bin/ninja cmTC_6f281 && [1/2] Building CXX object CMakeFiles/cmTC_6f281.dir/src.cxx.o
+warning: unknown warning option '-Wsuggest-override'; did you mean '-Wshift-overflow'? [-Wunknown-warning-option]
+1 warning generated.
+[2/2] Linking CXX executable cmTC_6f281
+
+
+Source file was:
+int main() { return 0; }
+Performing C SOURCE FILE Test C_SUPPORTS_MISLEADING_INDENTATION_FLAG failed with the following output:
+Change Dir: /Users/parsabagheri/Development/llvm-project/mlirBuild/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/local/bin/ninja cmTC_40aae && [1/2] Building C object CMakeFiles/cmTC_40aae.dir/src.c.o
+FAILED: CMakeFiles/cmTC_40aae.dir/src.c.o 
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/cc   -fPIC -Werror=date-time -Werror=unguarded-availability-new -Wall -Wextra -Wno-unused-parameter -Wwrite-strings -Wmissing-field-initializers -Wimplicit-fallthrough -Wcovered-switch-default -Wstring-conversion -DC_SUPPORTS_MISLEADING_INDENTATION_FLAG -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk   -Werror -Wmisleading-indentation -MD -MT CMakeFiles/cmTC_40aae.dir/src.c.o -MF CMakeFiles/cmTC_40aae.dir/src.c.o.d -o CMakeFiles/cmTC_40aae.dir/src.c.o -c src.c
+error: unknown warning option '-Wmisleading-indentation'; did you mean '-Wbinding-in-condition'? [-Werror,-Wunknown-warning-option]
+ninja: build stopped: subcommand failed.
+
+
+Source file was:
+int main(void) { return 0; }
+Performing C++ SOURCE FILE Test CXX_SUPPORTS_MISLEADING_INDENTATION_FLAG failed with the following output:
+Change Dir: /Users/parsabagheri/Development/llvm-project/mlirBuild/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/local/bin/ninja cmTC_5a13f && [1/2] Building CXX object CMakeFiles/cmTC_5a13f.dir/src.cxx.o
+FAILED: CMakeFiles/cmTC_5a13f.dir/src.cxx.o 
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++   -fPIC -fvisibility-inlines-hidden -Werror=date-time -Werror=unguarded-availability-new -Wall -Wextra -Wno-unused-parameter -Wwrite-strings -Wcast-qual -Wmissing-field-initializers -Wimplicit-fallthrough -Wcovered-switch-default -Wno-noexcept-type -Wnon-virtual-dtor -Wdelete-non-virtual-dtor -Wstring-conversion -DCXX_SUPPORTS_MISLEADING_INDENTATION_FLAG -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk   -Werror -Wmisleading-indentation -MD -MT CMakeFiles/cmTC_5a13f.dir/src.cxx.o -MF CMakeFiles/cmTC_5a13f.dir/src.cxx.o.d -o CMakeFiles/cmTC_5a13f.dir/src.cxx.o -c src.cxx
+error: unknown warning option '-Wmisleading-indentation'; did you mean '-Wbinding-in-condition'? [-Werror,-Wunknown-warning-option]
+ninja: build stopped: subcommand failed.
+
+
+Source file was:
+int main() { return 0; }
+Performing C++ SOURCE FILE Test -Wl,--color-diagnostics failed with the following output:
+Change Dir: /Users/parsabagheri/Development/llvm-project/mlirBuild/CMakeFiles/CMakeTmp
+
+Run Build Command(s):/usr/local/bin/ninja cmTC_d40ef && [1/2] Building CXX object CMakeFiles/cmTC_d40ef.dir/src.cxx.o
+FAILED: CMakeFiles/cmTC_d40ef.dir/src.cxx.o 
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++   -fPIC -fvisibility-inlines-hidden -Werror=date-time -Werror=unguarded-availability-new -Wall -Wextra -Wno-unused-parameter -Wwrite-strings -Wcast-qual -Wmissing-field-initializers -Wimplicit-fallthrough -Wcovered-switch-default -Wno-noexcept-type -Wnon-virtual-dtor -Wdelete-non-virtual-dtor -Wstring-conversion -fdiagnostics-color -D-Wl,--color-diagnostics -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX10.15.sdk -MD -MT CMakeFiles/cmTC_d40ef.dir/src.cxx.o -MF CMakeFiles/cmTC_d40ef.dir/src.cxx.o.d -o CMakeFiles/cmTC_d40ef.dir/src.cxx.o -c src.cxx
+In file included from <built-in>:374:
+<command line>:1:9: error: macro name must be an identifier
+#define -Wl,--color-diagnostics 1
+        ^
+1 error generated.
+ninja: build stopped: subcommand failed.
+
+
+Source file was:
+int main() { return 0; }
