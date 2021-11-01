@@ -34,8 +34,10 @@ applyTilingToLoopPatterns(LinalgTilingLoopType loopType, FuncOp funcOp,
   patterns.add<LinalgTilingPattern<GenericOp>>(
       ctx, options,
       LinalgTransformationFilter(ArrayRef<Identifier>{},
-                                 Identifier::get("tiled-size", ctx)));
+                                 Identifier::get("tiled", ctx)));
   (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+  (void)applyPatternsAndFoldGreedily(
+      funcOp, getLinalgTilingCanonicalizationPatterns(ctx));
   // Drop the marker.
   funcOp.walk([](LinalgOp op) {
     op->removeAttr(LinalgTransforms::kLinalgTransformMarker);

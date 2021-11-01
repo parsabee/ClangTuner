@@ -455,7 +455,7 @@ public:
     patterns.add<LinalgTilingPattern<OpTy>>(
         ctx, options,
         LinalgTransformationFilter(ArrayRef<Identifier>{},
-                                   Identifier::get("tiled-size", ctx)));
+                                   Identifier::get("tiled", ctx)));
     RewritePatternList<OpTypes...>::insert(patterns, options);
   }
 };

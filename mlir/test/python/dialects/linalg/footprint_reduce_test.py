@@ -1,13 +1,16 @@
-# RUN: %PYTHON %s 2>&1
+# RUN: %PYTHON %s | FileCheck %s
 
 import ctypes
 import gc, sys
+import re
+from functools import reduce
 from mlir.ir import *
 from mlir.dialects import builtin
 from mlir.dialects import linalg
 from mlir.dialects import std
 from mlir.passmanager import *
 from mlir.execution_engine import *
+from mlir.dialects.linalg.opdsl.lang import *
 
 elm_wise_template = """
 #map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
@@ -24,10 +27,26 @@ module {{
 }}
 """
 
+bcast_template = """
+#map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+#map2 = affine_map<(d0, d1, d2) -> (d1, d2)>
+module {{
+  func @function(%arg0: memref<{0}>, %arg1: memref<{1}>) -> memref<{2}> {{
+    %0 = memref.alloc() : memref<{0}>
+    linalg.generic {{indexing_maps = [#map, #map2, #map], iterator_types = ["parallel", "parallel", "parallel"]}} ins(%arg0, %arg1 : memref<{0}>, memref<{1}>) outs(%0 : memref<{2}>) {{
+    ^bb0(%arg2: f32, %arg3: f32, %arg4: f32):  // no predecessors
+      %1 = addf %arg2, %arg3 : f32
+      linalg.yield %1 : f32
+    }}
+    return %0 : memref<{2}>
+  }}
+}}
+"""
+
 # Log everything to stderr and flush so that we have a unified stream to match
 # errors/info emitted by MLIR to stderr.
 def log(*args):
-  print(*args, file=sys.stderr)
+  print(*args, file=sys.stdout)
   sys.stderr.flush()
 
 def run(f):
@@ -41,15 +60,82 @@ def transform(module, memref_size):
   import mlir.dialects.linalg.passes
   import mlir.transforms
 
-  pm = PassManager.parse('builtin.func(linalg-tile)')
+  pm = PassManager.parse('builtin.func(linalg-memory-footprint-reduce{{linalg-max-memory-footprint={}}})'.format(memref_size))
   pm.run(module)
   return module
 
-def testSameSizeElementWise():
-  with Context():
-    args = ["64x128x1024xf32"] * 3
-    module = Module.parse(elm_wise_template.format(*args))
-    module = transform(module, 100000)
-    log(module)
+def findAllGenericOpsInOp(op):
+  if isinstance(op, linalg.GenericOp):
+    return [op]
 
+  genops = []
+  for region in op:
+    genops += findAllGenericOpsInRegion(region) 
+  return genops
+
+def findAllGenericOpsInBlock(block):
+  genops = []
+  for op in block:
+    genops += findAllGenericOpsInOp(op)
+  return genops
+
+def findAllGenericOpsInRegion(region):
+  genops = []
+  for block in region:
+    genops += findAllGenericOpsInBlock(block)
+  return genops
+
+def findAllGenericOpsInModule(module):
+  genops = []
+  for op in module.body:
+    genops += findAllGenericOpsInOp(op)
+  return genops
+
+def parseMemRefString(memrefString):
+  result = re.search(r"\<(.*?)\>", memrefString)
+  result = result.group(1).split(',')[0].split('x')
+  shape = [int(x) for x in result[:-1]]
+  elementBitWidth = int(result[-1][1:])
+  return shape, elementBitWidth
+
+def calculateSize(shape, bitwidth):
+  return reduce(lambda a, b: a * b, shape) * bitwidth//8
+
+def calculateFootprintOfGenOp(genop):
+  return sum(calculateSize(*parseMemRefString(str(inp.type))) for inp in genop.inputs) + \
+         sum(calculateSize(*parseMemRefString(str(out.type))) for out in genop.outputs)
+
+def transformAndCheckResults(module, maxMemSize):
+  module = transform(module, maxMemSize)
+  genops = findAllGenericOpsInModule(module)
+  success = True
+  for genop in genops:
+    if calculateFootprintOfGenOp(genop) > maxMemSize:
+      log("FAIL")
+      genop.dump()
+      success = False
+
+  if success:
+    log("SUCCESS")
+
+def testSameSizeElementWise():
+  with Context() as ctx:
+    args = ["64x128x1024xf32"] * 3
+    maxMemSize = 100000
+    module = Module.parse(elm_wise_template.format(*args))
+    transformAndCheckResults(module, maxMemSize)
+
+# CHECK-LABEL: testSameSizeElementWise
+# CHECK: SUCCESS
 run(testSameSizeElementWise)
+
+def testBroadcast():
+  with Context() as ctx:
+    args = ["64x128x1024xf32", "128x1024xf32", "64x128x1024xf32"]
+    maxMemSize = 100000
+    module = Module.parse(bcast_template.format(*args))
+    transformAndCheckResults(module, maxMemSize)
+
+# CHECK-LABEL: testBroadcast
+# CHECK: SUCCESS
+run(testBroadcast)
