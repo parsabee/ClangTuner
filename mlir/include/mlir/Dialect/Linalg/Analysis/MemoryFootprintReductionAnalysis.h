@@ -17,10 +17,10 @@ using namespace mlir::linalg;
 namespace mlir {
 namespace linalg {
 
-llvm::SmallVector<int64_t>
+llvm::SmallVector<int64_t, 4>
 computeTileSizesForMemoryFootprintReduction(LinalgOp op,
                                             int64_t maxMemoryFootprint);
 
-}
+} // namespace linalg
 } // namespace mlir
 #endif

@@ -8,25 +8,17 @@
 
 #include "mlir/Dialect/Linalg/Analysis/MemoryFootprintReductionAnalysis.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
 #include <numeric>
 
 using namespace mlir;
 using namespace mlir::linalg;
 
-static int64_t getDivisor(int64_t n, int64_t divisor,
-                          std::function<void(int64_t &)> fn) {
+static int64_t getDivisorCeil(int64_t n, int64_t divisor) {
   assert(divisor <= n && divisor >= 1);
   while (n % divisor)
-    fn(divisor);
+    divisor++;
   return divisor;
-}
-
-static int64_t getDivisorFloor(int64_t n, int64_t divisor) {
-  return getDivisor(n, divisor, [](int64_t &d) { d--; });
-}
-
-static int64_t getDivisorCeil(int64_t n, int64_t divisor) {
-  return getDivisor(n, divisor, [](int64_t &d) { d++; });
 }
 
 /// Calculates the size (in bytes) of a ranked tensor
@@ -43,15 +35,15 @@ struct RankedOperands {
     mlir::ArrayRef<int64_t> shape;
     size_t bitWidth;
   };
-  SmallVector<Operand> inputs;
-  SmallVector<Operand> outputs;
+  SmallVector<Operand, 2> inputs;
+  SmallVector<Operand, 2> outputs;
 };
 
 RankedOperands getOperands(LinalgOp op) {
   auto findRankedOperands = [](OpOperandVector operandVector)
-      -> SmallVector<RankedOperands::Operand> {
-    SmallVector<RankedOperands::Operand> rankedOperands;
-    for (auto op : operandVector) {
+      -> SmallVector<RankedOperands::Operand, 2> {
+    SmallVector<RankedOperands::Operand, 2> rankedOperands;
+    for (auto *op : operandVector) {
       if (auto memRef = op->get().getType().dyn_cast<mlir::MemRefType>()) {
         if (!memRef.hasStaticShape())
           return {};
@@ -67,12 +59,16 @@ RankedOperands getOperands(LinalgOp op) {
           findRankedOperands(op.getOutputOperands())};
 }
 
-static llvm::SmallVector<int64_t> getNewShape(llvm::ArrayRef<int64_t> oldShape,
-                                              size_t bitWidth, size_t maxSize) {
+using StaticallyShapedOpSizeCompFn =
+    std::function<size_t(ArrayRef<int64_t>, int64_t)>;
 
-  llvm::SmallVector<int64_t> newShape(oldShape.begin(), oldShape.end());
+static llvm::SmallVector<int64_t, 4>
+getNewShape(llvm::ArrayRef<int64_t> oldShape, size_t bitWidth, size_t maxSize,
+            StaticallyShapedOpSizeCompFn cmpFn) {
+
+  llvm::SmallVector<int64_t, 4> newShape(oldShape.begin(), oldShape.end());
   for (size_t i = 0, end = oldShape.size(); i < end; i++) {
-    auto curSize = getSizeFromShape(newShape, bitWidth);
+    auto curSize = cmpFn(newShape, bitWidth);
     int64_t reductionFactor = (curSize + maxSize - 1) / maxSize;
     if (oldShape[i] < reductionFactor)
       newShape[i] = 1;
@@ -86,16 +82,23 @@ static llvm::SmallVector<int64_t> getNewShape(llvm::ArrayRef<int64_t> oldShape,
   return newShape;
 }
 
-namespace mlir {
-namespace linalg {
-llvm::SmallVector<int64_t>
-computeTileSizesForMemoryFootprintReduction(LinalgOp op,
-                                            int64_t maxMemoryFootprint) {
-  auto operands = getOperands(op);
+static llvm::SmallVector<int64_t, 4>
+getMatMulTileSizes(RankedOperands &rankedOps, int64_t maxMemoryFootprint) {
+  assert(rankedOps.inputs.size() == 2 && rankedOps.outputs.size() == 1);
+  StaticallyShapedOpSizeCompFn cmpFn = [](ArrayRef<int64_t> shape,
+                                          int64_t bitwidth) {
+    int64_t nbytes = bitwidth / 8;
+    return (shape[0] * shape[1] * nbytes) + (shape[1] * shape[2] * nbytes) +
+           (shape[0] * shape[2] * nbytes);
+  };
+  auto m = rankedOps.inputs[0].shape[0], n = rankedOps.inputs[0].shape[1],
+       k = rankedOps.inputs[1].shape[1];
+  return getNewShape({m, k, n}, rankedOps.inputs[0].bitWidth,
+                     maxMemoryFootprint, cmpFn);
+}
 
-  // We can't tile if we have unranked stuff
-  if (operands.inputs.empty() || operands.outputs.empty())
-    return {};
+static SmallVector<int64_t> getGenericTileSizes(RankedOperands &operands,
+                                                int64_t maxMemoryFootprint) {
 
   auto opSizeFold = [](size_t size, RankedOperands::Operand &op) {
     return size + getSizeFromShape(op.shape, op.bitWidth);
@@ -118,9 +121,28 @@ computeTileSizesForMemoryFootprintReduction(LinalgOp op,
   if (outputSize < desiredOutputSize)
     return {};
 
-  // TODO: Right now it is assumed that the generic op only has one output
   auto &rankedOp = *operands.outputs.begin();
-  return getNewShape(rankedOp.shape, rankedOp.bitWidth, desiredOutputSize);
+  return getNewShape(rankedOp.shape, rankedOp.bitWidth, desiredOutputSize,
+                     getSizeFromShape);
+}
+
+namespace mlir {
+namespace linalg {
+llvm::SmallVector<int64_t, 4>
+computeTileSizesForMemoryFootprintReduction(LinalgOp op,
+                                            int64_t maxMemoryFootprint) {
+
+  auto operands = getOperands(op);
+  // TODO: At the moment it is assumed that the linalg op only has one output
+  // We can't tile if we have unranked stuff
+  if (operands.inputs.empty() || operands.outputs.empty() ||
+      operands.outputs.size() > 1)
+    return {};
+
+  if (isa<MatmulOp>(op)) {
+    return getMatMulTileSizes(operands, maxMemoryFootprint);
+  }
+  return getGenericTileSizes(operands, maxMemoryFootprint);
 }
 } // namespace linalg
 } // namespace mlir
