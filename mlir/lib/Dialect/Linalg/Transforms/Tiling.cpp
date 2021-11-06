@@ -546,7 +546,8 @@ applyTilingToLoopPatterns(LinalgTilingLoopType loopType, FuncOp funcOp,
                      .setDistributionTypes(distributionTypes);
   MLIRContext *ctx = funcOp.getContext();
   RewritePatternSet patterns(ctx);
-  RewritePatternList<GenericOp, MatmulOp>::insert(patterns, options);
+  insertTilingPatterns(patterns, options);
+  scf::populateSCFForLoopCanonicalizationPatterns(patterns);
   (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   (void)applyPatternsAndFoldGreedily(
       funcOp, getLinalgTilingCanonicalizationPatterns(ctx));
@@ -554,6 +555,10 @@ applyTilingToLoopPatterns(LinalgTilingLoopType loopType, FuncOp funcOp,
   funcOp.walk([](LinalgOp op) {
     op->removeAttr(LinalgTransforms::kLinalgTransformMarker);
   });
+
+  // Apply swap pattern after generating loop nest and running
+  // canonicalizations.
+  applyExtractSliceOfPadTensorSwapPattern(funcOp);
 }
 
 namespace {
