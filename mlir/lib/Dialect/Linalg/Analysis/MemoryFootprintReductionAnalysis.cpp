@@ -23,7 +23,7 @@ static int64_t getDivisorCeil(int64_t n, int64_t divisor) {
 
 /// Calculates the size (in bytes) of a ranked tensor
 static size_t getSizeFromShape(llvm::ArrayRef<int64_t> shape,
-                                      size_t elementBitWidth) {
+                               size_t elementBitWidth) {
   assert(elementBitWidth % 8 == 0 && "BitWidth has to be divisible by 8");
   auto elementSize = elementBitWidth / 8;
   return std::accumulate(shape.begin(), shape.end(), elementSize,
@@ -35,25 +35,40 @@ static SmallVector<int64_t, 4> getLinalgOpLoopShape(LinalgOp op) {
   return shapeSizesToLoopsMap.compose(op.getStaticShape());
 }
 
-static int64_t getBitWidth(LinalgOp op) {
-  for (auto operand: op->getOperands()) {
+static SmallVector<int64_t, 4> getBitWidth(LinalgOp op) {
+  SmallVector<int64_t, 4> bitWidths;
+  for (auto operand : op->getOperands()) {
     if (auto shapedType = operand.getType().dyn_cast<ShapedType>()) {
-      return shapedType.getElementTypeBitWidth();
+      bitWidths.push_back(shapedType.getElementTypeBitWidth());
+    } else {
+      // TODO: Find a method for calculating the bitwidth of the type when
+      // it's not shaped
+      bitWidths.push_back(0);
     }
   }
-  return -1;
+  return bitWidths;
 }
 
 namespace mlir {
 namespace linalg {
 
-size_t LinalgOpShape::computeSize() {
-  return std::accumulate(indexingMaps.begin(), indexingMaps.end(), 0,
-                         [this](size_t curSize, const AffineMap &curMap) {
-                           auto curOperandsShape = curMap.compose(opShape);
-                           return curSize +
-                                  getSizeFromShape(curOperandsShape, bitWidth);
-                         });
+LinalgOpShape::LinalgOpShape(SmallVector<int64_t, 4> s,
+                             ArrayRef<AffineMap> iMaps,
+                             SmallVector<int64_t, 4> bWidths)
+    : opShape(std::move(s)), indexingMaps(iMaps.begin(), iMaps.end()),
+      bitWidths(std::move(bWidths)) {
+  assert(bitWidths.size() == indexingMaps.size());
+}
+
+size_t LinalgOpShape::computeSize() const {
+  return std::accumulate(
+      zip(indexingMaps, bitWidths).begin(), zip(indexingMaps, bitWidths).end(),
+      0, [this](size_t curSize, const std::tuple<AffineMap, int64_t> &it) {
+        auto &map = std::get<0>(it);
+        auto bitWidth = std::get<1>(it);
+        auto curOperandsShape = map.compose(opShape);
+        return curSize + getSizeFromShape(curOperandsShape, bitWidth);
+      });
 }
 
 void reduceLinalgOpFootprintGreedily(LinalgOpShape &linalgOpShape,
@@ -61,7 +76,7 @@ void reduceLinalgOpFootprintGreedily(LinalgOpShape &linalgOpShape,
   auto &shape = linalgOpShape.getShape();
   for (size_t i = 0, end = shape.size(); i < end; i++) {
     auto curSize = linalgOpShape.computeSize();
-    if (curSize < maxSize)
+    if (curSize <= maxSize)
       return;
     int64_t reductionFactor = (curSize + maxSize - 1) / maxSize;
     if (shape[i] < reductionFactor)

@@ -20,23 +20,19 @@ namespace linalg {
 /// Encapsulates the information that we need for size reduction of a linalg op
 class LinalgOpShape {
   SmallVector<int64_t, 4> opShape;
-  ArrayRef<AffineMap> indexingMaps;
-  int64_t bitWidth;
+  const SmallVector<AffineMap, 4> indexingMaps;
+  const SmallVector<int64_t, 4> bitWidths;
 
 public:
-  LinalgOpShape(ArrayRef<int64_t> s, ArrayRef<AffineMap> iMaps, int64_t bWidth)
-      : opShape(s.begin(), s.end()), indexingMaps(iMaps), bitWidth(bWidth) {}
-  LinalgOpShape(const LinalgOpShape &) = delete;
-  LinalgOpShape(LinalgOpShape &&other)
-      : opShape(std::move(other.opShape)), indexingMaps(other.indexingMaps),
-        bitWidth(other.bitWidth) {}
+  LinalgOpShape(SmallVector<int64_t, 4> s, ArrayRef<AffineMap> iMaps,
+                SmallVector<int64_t, 4> bWidths);
 
   SmallVector<int64_t, 4> &getShape() { return opShape; }
 
   /// Computes the size of this linalg operation based on the sizes of its
   /// operands (which are calculated by looking at their corresponding
   /// indexingMap)
-  size_t computeSize();
+  size_t computeSize() const;
 };
 
 void reduceLinalgOpFootprintGreedily(LinalgOpShape &, size_t maxSize);
