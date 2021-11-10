@@ -536,31 +536,6 @@ applyTilingToLoopPatterns(LinalgTilingLoopType loopType, FuncOp funcOp,
   applyExtractSliceOfPadTensorSwapPattern(funcOp);
 }
 
-static void
-applyTilingToLoopPatterns(LinalgTilingLoopType loopType, FuncOp funcOp,
-                          TileSizeComputationFunction tileCompFunc,
-                          ArrayRef<StringRef> distributionTypes = {}) {
-  auto options = LinalgTilingOptions()
-                     .setTileSizeComputationFunction(tileCompFunc)
-                     .setLoopType(loopType)
-                     .setDistributionTypes(distributionTypes);
-  MLIRContext *ctx = funcOp.getContext();
-  RewritePatternSet patterns(ctx);
-  insertTilingPatterns(patterns, options);
-  scf::populateSCFForLoopCanonicalizationPatterns(patterns);
-  (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
-  (void)applyPatternsAndFoldGreedily(
-      funcOp, getLinalgTilingCanonicalizationPatterns(ctx));
-  // Drop the marker.
-  funcOp.walk([](LinalgOp op) {
-    op->removeAttr(LinalgTransforms::kLinalgTransformMarker);
-  });
-
-  // Apply swap pattern after generating loop nest and running
-  // canonicalizations.
-  applyExtractSliceOfPadTensorSwapPattern(funcOp);
-}
-
 namespace {
 struct LinalgTilingPass : public LinalgTilingBase<LinalgTilingPass> {
   LinalgTilingPass() = default;
@@ -604,40 +579,6 @@ struct LinalgTilingToTiledLoopsPass
   }
 };
 
-struct LinalgMemoryFootprintReductionPass
-    : public LinalgMemoryFootprintReductionBase<
-          LinalgMemoryFootprintReductionPass> {
-  LinalgMemoryFootprintReductionPass() = default;
-  LinalgMemoryFootprintReductionPass(int64_t maxFootprint) {
-    maxMemFootprint = maxFootprint;
-  }
-
-  void runOnFunction() override {
-    // Apply tiling patterns for each linalg op here
-    if (maxMemFootprint <= 0)
-      return;
-
-    auto tileCompFunc = [this](OpBuilder &builder,
-                               Operation *op) -> SmallVector<Value, 4> {
-      auto linalgOp = dyn_cast<LinalgOp>(op);
-      if (!linalgOp)
-        return {};
-
-      // Get the appropriate tiling shape for this generic op, map them to mlir
-      // value
-      return llvm::to_vector<4>(llvm::map_range(
-          computeTileSizesForMemoryFootprintReduction(linalgOp,
-                                                      maxMemFootprint),
-          [&](int64_t s) -> Value {
-            return builder.create<ConstantIndexOp>(op->getLoc(), s);
-          }));
-    };
-
-    applyTilingToLoopPatterns(LinalgTilingLoopType::ParallelLoops,
-                              getFunction(), tileCompFunc);
-  }
-};
-
 } // namespace
 
 std::unique_ptr<OperationPass<FuncOp>>
@@ -655,9 +596,4 @@ mlir::createLinalgTilingToTiledLoopPass(ArrayRef<int64_t> tileSizes,
                                         ArrayRef<StringRef> distributionTypes) {
   return std::make_unique<LinalgTilingToTiledLoopsPass>(tileSizes,
                                                         distributionTypes);
-}
-
-std::unique_ptr<OperationPass<FuncOp>>
-mlir::createLinalgMemoryFootprintReductionPass(int64_t maxFootprint) {
-  return std::make_unique<LinalgMemoryFootprintReductionPass>(maxFootprint);
 }

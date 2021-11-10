@@ -14,7 +14,7 @@
 using namespace mlir;
 using namespace mlir::linalg;
 
-static int64_t getDivisorCeil(int64_t n, int64_t divisor) {
+static int64_t getNextDivisor(int64_t n, int64_t divisor) {
   assert(divisor <= n && divisor >= 1);
   while (n % divisor)
     divisor++;
@@ -30,12 +30,7 @@ static size_t getSizeFromShape(llvm::ArrayRef<int64_t> shape,
                          std::multiplies<>());
 }
 
-static SmallVector<int64_t, 4> getLinalgOpLoopShape(LinalgOp op) {
-  AffineMap shapeSizesToLoopsMap = op.getShapesToLoopsMap();
-  return shapeSizesToLoopsMap.compose(op.getStaticShape());
-}
-
-static SmallVector<int64_t, 4> getBitWidth(LinalgOp op) {
+static SmallVector<int64_t, 4> getBitWidths(LinalgOp op) {
   SmallVector<int64_t, 4> bitWidths;
   for (auto operand : op->getOperands()) {
     if (auto shapedType = operand.getType().dyn_cast<ShapedType>()) {
@@ -52,12 +47,13 @@ static SmallVector<int64_t, 4> getBitWidth(LinalgOp op) {
 namespace mlir {
 namespace linalg {
 
-LinalgOpShape::LinalgOpShape(SmallVector<int64_t, 4> s,
-                             ArrayRef<AffineMap> iMaps,
-                             SmallVector<int64_t, 4> bWidths)
-    : opShape(std::move(s)), indexingMaps(iMaps.begin(), iMaps.end()),
-      bitWidths(std::move(bWidths)) {
+LinalgOpShape LinalgOpShape::create(LinalgOp op) {
+  auto shapeSizesToLoopsMap = op.getShapesToLoopsMap();
+  auto opShape = shapeSizesToLoopsMap.compose(op.getStaticShape());
+  auto indexingMaps = op.getIndexingMaps();
+  auto bitWidths = getBitWidths(op);
   assert(bitWidths.size() == indexingMaps.size());
+  return LinalgOpShape(opShape, indexingMaps, std::move(bitWidths));
 }
 
 size_t LinalgOpShape::computeSize() const {
@@ -71,9 +67,14 @@ size_t LinalgOpShape::computeSize() const {
       });
 }
 
-void reduceLinalgOpFootprintGreedily(LinalgOpShape &linalgOpShape,
+void reduceLinalgOpFootprintGreedily(Operation *op,
+                                     LinalgOpShape &linalgOpShape,
                                      size_t maxSize) {
-  auto &shape = linalgOpShape.getShape();
+  // Filtering out unwanted ops
+  if (!isa<LinalgOp>(op))
+    return;
+
+  auto &shape = linalgOpShape.get();
   for (size_t i = 0, end = shape.size(); i < end; i++) {
     auto curSize = linalgOpShape.computeSize();
     if (curSize <= maxSize)
@@ -82,19 +83,18 @@ void reduceLinalgOpFootprintGreedily(LinalgOpShape &linalgOpShape,
     if (shape[i] < reductionFactor)
       shape[i] = 1;
     else {
-      auto divisor = getDivisorCeil(shape[i], reductionFactor);
+      auto divisor = getNextDivisor(shape[i], reductionFactor);
       shape[i] /= divisor;
     }
   }
 }
 
 SmallVector<int64_t, 4> computeTileSizesForMemoryFootprintReduction(
-    LinalgOp op, int64_t maxMemoryFootprint,
-    std::function<void(LinalgOpShape &, int64_t)> reduceFn) {
-  LinalgOpShape linalgOpShape(getLinalgOpLoopShape(op), op.getIndexingMaps(),
-                              getBitWidth(op));
-  reduceFn(linalgOpShape, maxMemoryFootprint);
-  return linalgOpShape.getShape();
+    LinalgOp op, int64_t maxMemoryFootprint, MemReduceFn reduceFn) {
+  auto opShape = LinalgOpShape::create(op);
+  reduceFn(op, opShape, maxMemoryFootprint);
+  return opShape.get();
 }
+
 } // namespace linalg
 } // namespace mlir

@@ -3,6 +3,7 @@
 import ctypes
 import gc, sys
 import re
+import itertools
 from functools import reduce
 from mlir.ir import *
 from mlir.dialects import builtin
@@ -68,30 +69,18 @@ def findAllGenericOpsInOp(op):
   if isinstance(op, linalg.GenericOp):
     return [op]
 
-  genops = []
-  for region in op:
-    genops += findAllGenericOpsInRegion(region) 
-  return genops
+  return itertools.chain.from_iterable(findAllGenericOpsInRegion(region) for region in op)
 
 def findAllGenericOpsInBlock(block):
-  genops = []
-  for op in block:
-    genops += findAllGenericOpsInOp(op)
-  return genops
+  return itertools.chain.from_iterable(findAllGenericOpsInOp(op) for op in block)
 
 def findAllGenericOpsInRegion(region):
-  genops = []
-  for block in region:
-    genops += findAllGenericOpsInBlock(block)
-  return genops
-
-def findAllGenericOpsInModule(module):
-  genops = []
-  for op in module.body:
-    genops += findAllGenericOpsInOp(op)
-  return genops
+  return itertools.chain.from_iterable(findAllGenericOpsInBlock(block) for block in region)
 
 def parseMemRefString(memrefString):
+  '''
+  extracts the shape and bit width of the memref string passed
+  '''
   result = re.search(r"\<(.*?)\>", memrefString)
   result = result.group(1).split(',')[0].split('x')
   shape = [int(x) for x in result[:-1]]
@@ -107,7 +96,7 @@ def calculateFootprintOfGenOp(genop):
 
 def transformAndCheckResults(module, maxMemSize):
   module = transform(module, maxMemSize)
-  genops = findAllGenericOpsInModule(module)
+  genops = findAllGenericOpsInBlock(module.body)
   success = True
   for genop in genops:
     if calculateFootprintOfGenOp(genop) > maxMemSize:

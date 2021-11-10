@@ -10,6 +10,7 @@
 #define MLIR_DIALECT_ANALYSIS_MEMORYFOOTPRINTREDUCTIONANALYSIS_H_
 
 #include "mlir/Dialect/Linalg/IR/LinalgOps.h"
+#include "mlir/Pass/Pass.h"
 
 using namespace mlir;
 using namespace mlir::linalg;
@@ -17,17 +18,26 @@ using namespace mlir::linalg;
 namespace mlir {
 namespace linalg {
 
-/// Encapsulates the information that we need for size reduction of a linalg op
+class LinalgOpShape;
+
+using MemReduceFn = std::function<void(Operation *, LinalgOpShape &, int64_t)>;
+
+/// Encapsulates the information that we need for reducing the memory footprint
+/// of a LinalgOp
 class LinalgOpShape {
   SmallVector<int64_t, 4> opShape;
   const SmallVector<AffineMap, 4> indexingMaps;
   const SmallVector<int64_t, 4> bitWidths;
 
-public:
   LinalgOpShape(SmallVector<int64_t, 4> s, ArrayRef<AffineMap> iMaps,
-                SmallVector<int64_t, 4> bWidths);
+                SmallVector<int64_t, 4> bWidths)
+      : opShape(std::move(s)), indexingMaps(iMaps.begin(), iMaps.end()),
+        bitWidths(std::move(bWidths)) {};
 
-  SmallVector<int64_t, 4> &getShape() { return opShape; }
+public:
+  static LinalgOpShape create(LinalgOp);
+
+  SmallVector<int64_t, 4> &get() { return opShape; }
 
   /// Computes the size of this linalg operation based on the sizes of its
   /// operands (which are calculated by looking at their corresponding
@@ -35,12 +45,12 @@ public:
   size_t computeSize() const;
 };
 
-void reduceLinalgOpFootprintGreedily(LinalgOpShape &, size_t maxSize);
+void reduceLinalgOpFootprintGreedily(Operation *, LinalgOpShape &,
+                                     size_t maxSize);
 
 llvm::SmallVector<int64_t, 4> computeTileSizesForMemoryFootprintReduction(
     LinalgOp op, int64_t maxMemoryFootprint,
-    std::function<void(LinalgOpShape &, int64_t)> reduceFn =
-        reduceLinalgOpFootprintGreedily);
+    MemReduceFn reduceFn = reduceLinalgOpFootprintGreedily);
 
 } // namespace linalg
 } // namespace mlir

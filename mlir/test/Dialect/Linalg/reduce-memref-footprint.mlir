@@ -2,9 +2,9 @@
 // RUN: mlir-opt %s --linalg-memory-footprint-reduce="linalg-max-memory-footprint=1000000" | FileCheck %s -check-prefix=REDUCE-1mb
 // RUN: mlir-opt %s --linalg-memory-footprint-reduce="linalg-max-memory-footprint=10000" | FileCheck %s -check-prefix=REDUCE-10kb
 
-#map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
+#map0 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 func @function(%arg0: memref<64x128x1024xf32>, %arg1: memref<64x128x1024xf32>, %arg2: memref<64x128x1024xf32>) {
-  linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel", "parallel"]} ins(%arg0, %arg1 : memref<64x128x1024xf32>, memref<64x128x1024xf32>) outs(%arg2 : memref<64x128x1024xf32>) {
+  linalg.generic {indexing_maps = [#map0, #map0, #map0], iterator_types = ["parallel", "parallel", "parallel"]} ins(%arg0, %arg1 : memref<64x128x1024xf32>, memref<64x128x1024xf32>) outs(%arg2 : memref<64x128x1024xf32>) {
   ^bb0(%arg3: f32, %arg4: f32, %arg5: f32):  // no predecessors
     %1 = addf %arg3, %arg4 : f32
     linalg.yield %1 : f32
@@ -98,7 +98,9 @@ func @function_bcast(%arg0: memref<64x128x1024xf32>, %arg1: memref<128x1024xf32>
 // REDUCE-10kb-DAG: [[C128:%.*]] = constant 128 : index
 // REDUCE-10kb-DAG: [[C64:%.*]] = constant 64 : index
 // REDUCE-10kb-DAG: [[C1:%.*]] = constant 1 : index
-// REDUCE-10kb: scf.parallel ([[I1:%.*]], [[I2:%.*]]) = ([[C0]], [[C0]]) to ([[C64]], [[C128]]) step ([[C1]], [[C1]]) {
+// REDUCE-10kb-DAG: [[C512:%.*]] = constant 512 : index
+// REDUCE-10kb-DAG: [[C1024:%.*]] = constant 1024 : index
+// REDUCE-10kb: scf.parallel ([[I1:%.*]], [[I2:%.*]], [[I3:%.*]]) = ([[C0]], [[C0]], [[C0]]) to ([[C64]], [[C128]], [[C1024]]) step ([[C1]], [[C1]], [[C512]]) {
 // REDUCE-10kb-NO: scf.parallel
 // REDUCE-10kb:   [[LHS_SUBVIEW:%.*]] = memref.subview [[LHS]]
 // REDUCE-10kb:   [[RHS_SUBVIEW:%.*]] = memref.subview [[RHS]]

@@ -34,8 +34,17 @@ std::unique_ptr<OperationPass<FuncOp>>
 createLinalgTilingToTiledLoopPass(ArrayRef<int64_t> tileSizes = {},
                                   ArrayRef<StringRef> distributionTypes = {});
 
-std::unique_ptr<OperationPass<FuncOp>>
-createLinalgMemoryFootprintReductionPass(int64_t maxFootprint = 0);
+namespace linalg {
+class LinalgOpShape;
+using MemReduceFn =
+    std::function<void(Operation *op, LinalgOpShape &, int64_t)>;
+void reduceLinalgOpFootprintGreedily(Operation *op, LinalgOpShape &,
+                                     size_t maxSize);
+} // namespace linalg
+
+std::unique_ptr<OperationPass<FuncOp>> createLinalgMemoryFootprintReductionPass(
+    int64_t maxFootprint = 0,
+    linalg::MemReduceFn fn = linalg::reduceLinalgOpFootprintGreedily);
 
 std::unique_ptr<OperationPass<FuncOp>>
 createLinalgPromotionPass(bool dynamicBuffers, bool useAlloca);
