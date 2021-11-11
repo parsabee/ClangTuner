@@ -11,7 +11,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "PassDetail.h"
-#include "mlir/Dialect/Linalg/Analysis/MemoryFootprintReductionAnalysis.h"
 #include "mlir/Dialect/Linalg/IR/LinalgTypes.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
@@ -502,13 +501,13 @@ static void insertTilingPatterns(RewritePatternSet &patterns,
   patterns.add<PadTensorOpTilingPattern>(patterns.getContext(), options);
 }
 
-static void applyExtractSliceOfPadTensorSwapPattern(FuncOp op) {
-  MLIRContext *ctx = op.getContext();
+static void applyExtractSliceOfPadTensorSwapPattern(FuncOp funcOp) {
+  MLIRContext *ctx = funcOp.getContext();
   RewritePatternSet patterns(ctx);
   patterns.add<ExtractSliceOfPadTensorSwapPattern>(patterns.getContext());
-  (void)applyPatternsAndFoldGreedily(op, std::move(patterns));
+  (void)applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
   (void)applyPatternsAndFoldGreedily(
-      op, getLinalgTilingCanonicalizationPatterns(ctx));
+      funcOp, getLinalgTilingCanonicalizationPatterns(ctx));
 }
 
 static void
