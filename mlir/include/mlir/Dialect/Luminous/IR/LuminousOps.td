@@ -37,11 +37,13 @@ def Luminous_LuminousModuleOp : Luminous_Op<"module", [
   let summary = "A top level compilation unit containing code to be run on a "
                 "luminous device.";
   let description = [{
-    module contains code that is intended to be run on device
-        .
+    module contains code that is intended to be run on device.
 
-    ``` luminous.module @symbol_name {
-      luminous.func{}... luminous.module_end
+    ```
+    luminous.module @symbol_name {
+      luminous.func{}
+      ...
+      luminous.module_end
     }
     ```
   }];
@@ -80,15 +82,28 @@ def Luminous_DispatchOp : Luminous_Op<"dispatch", [AttrSizedOperandSegments]>,
 
         // This module creates a separate compilation unit.
         luminous.module @kernels{
-            luminous.func @kernel_1(){
+            luminous.func @kernel_0() {
+              luminous.return
+            }
 
+            luminous.func @kernel_1(%arg0: memref<128xf32>){
+              ...
+              luminous.return
             }
         }
 
-        %t0 = luminous.wait
-        luminous.dispatch[% t0] // (Optional) Execute only
-            @kernels::@kernel_1 // Kernel function.
-            args()
+        func @function(%arg0: memref<128xf32>) {
+          %c_128 = constant 128: index
+          %t0 = luminous.dispatch @kernels::@kernel_0 <%c_128> ()
+          %t1 = luminous.dispatch
+                [% t0] // Async dependency tokens
+                @kernels::@kernel_1 // Kernel function symbol
+                <%c_128> // Kernel shape
+                (%arg0) // Kernel operands
+                : !luminous.async_token
+          luminous.wait [%t1]
+          return
+        }
     }
     ```
   }];
@@ -139,10 +154,11 @@ def Luminous_LuminousFuncOp : Luminous_Op<"func", [
   let summary = "Function executable on a Luminous device";
 
   let description = [{
-    ``` op :: = `luminous.func` symbol - ref -
-                id `(` argument - list `)` (`->` function - result - list)
-        ? memory - attribution `kernel`
-        ? function - attributes ? region
+    ``` op :: = `luminous.func` symbol-ref-id `(` argument-list `)`
+                 (`->` function-result-list)?
+                  memory-attribution `kernel`?
+                  function-attributes?
+                  region
     ```
 
     Example:
@@ -160,7 +176,6 @@ def Luminous_LuminousFuncOp : Luminous_Op<"func", [
           ...
     }): (index)->()
     ```
-    Note the non-default memory spaces used in memref types in memory attribution.
   }];
 
   let regions = (region AnyRegion : $body);
