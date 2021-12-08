@@ -65,35 +65,40 @@ def Luminous_ModuleEndOp
 }
 
 def Luminous_DispatchOp : Luminous_Op<"dispatch", [AttrSizedOperandSegments]>,
-    Arguments<(ins Variadic<Luminous_AsyncToken>:$asyncDependencies,
+    Arguments<(ins Variadic<Luminous_AsyncTokenType>:$asyncDependencies,
                  SymbolRefAttr:$kernel,
+                 Variadic<Index>:$shape,
                  Variadic<AnyType>:$operands)>,
-    Results<(outs Optional<Luminous_AsyncToken>:$asyncToken)> {
+    Results<(outs Luminous_AsyncTokenType:$asyncToken)> {
   let summary = "Launches a function as a Luminous kernel";
 
   let description = [{
     Example:
 
-    ```mlir module attributes{luminous.container_module} {
+    ```mlir
+    module attributes{luminous.container_module} {
 
         // This module creates a separate compilation unit.
-        luminous.module @kernels{luminous.func @kernel_1(){
+        luminous.module @kernels{
+            luminous.func @kernel_1(){
 
-        }}
+            }
+        }
 
-            % t0 =
-            luminous.wait luminous.dispatch[% t0] // (Optional) Execute only
-                                                  // after %t0 has completed.
-            @kernels::@kernel_1                   // Kernel function.
-                args()}
+        %t0 = luminous.wait
+        luminous.dispatch[% t0] // (Optional) Execute only
+            @kernels::@kernel_1 // Kernel function.
+            args()
+    }
     ```
   }];
 
   let skipDefaultBuilders = 1;
 
-  let builders = [OpBuilder<(ins "LuminousFuncOp"
-                             : $kernelFunc, "ValueRange"
-                             : $kernelOperands)>];
+  let builders = [OpBuilder<(ins "LuminousFuncOp": $kernelFunc,
+                                 "ValueRange": $asyncDependencies,
+                                 "ValueRange": $kernelShape,
+                                 "ValueRange": $kernelOperands)>];
 
   let extraClassDeclaration = [{
     /// The number of operands passed to the kernel function.
@@ -110,13 +115,21 @@ def Luminous_DispatchOp : Luminous_Op<"dispatch", [AttrSizedOperandSegments]>,
 
     /// The name of the symbol reference attribute specifying the kernel to launch.
     static StringRef getKernelAttrName() { return "kernel"; }
+
+    // This needs to quietly verify if attributes with names defined below are
+    // present since it is run before the verifier of this op.
+    friend LogicalResult LuminousDialect::verifyOperationAttribute(Operation *op,
+                                                                   NamedAttribute attr);
   }];
 
   let verifier = [{ return ::verify(*this); }];
   let assemblyFormat = [{
-      custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
-          $kernel custom<DispatchOpOperands>($operands, type($operands))
-              attr-dict}];
+      custom<AsyncResult>(type($asyncToken))
+      custom<AsyncDependencies>($asyncDependencies)
+      $kernel
+      custom<DispatchShape>($shape)
+      custom<DispatchOpOperands>($operands, type($operands))
+      attr-dict}];
 }
 
 def Luminous_LuminousFuncOp : Luminous_Op<"func", [
@@ -185,11 +198,28 @@ def Luminous_WaitOp : Luminous_Op<"wait"> {
     This op synchronizes the host or the device with a list of dependent
   }];
 
-  let arguments = (ins Variadic<Luminous_AsyncToken> : $asyncDependencies);
-  let results = (outs Optional<Luminous_AsyncToken> : $asyncToken);
+  let arguments = (ins Variadic<Luminous_AsyncTokenType> : $asyncDependencies);
+  let results = (outs);
 
   let assemblyFormat =
-      [{custom<AsyncDependencies>(type($asyncToken), $asyncDependencies) attr-dict}];
+      [{custom<AsyncDependencies>($asyncDependencies)
+          attr-dict}];
+}
+
+def Luminous_ReturnOp : Luminous_Op<"return", [HasParent<"LuminousFuncOp">, NoSideEffect,
+                                     Terminator]>,
+                   Arguments<(ins Variadic<AnyType>:$operands)>, Results<(outs)> {
+  let summary = "Terminator for Luminous functions.";
+  let description = [{
+    A terminator operation for regions that appear in the body of  `luminous.func`
+    functions. The operands to the `luminous.return` are the result values returned
+    by an invocation of the `luminous.func`.
+  }];
+
+  let builders = [OpBuilder<(ins), [{ // empty}]>];
+
+    let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
+    let verifier = [{ return ::verify(*this); }];
 }
 
 #endif // LUMINOUS_OPS

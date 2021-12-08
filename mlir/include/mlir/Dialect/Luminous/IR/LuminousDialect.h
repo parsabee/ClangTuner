@@ -17,16 +17,16 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
-namespace mlir {
-namespace luminous {
-class AsyncTokenType
-    : public Type::TypeBase<AsyncTokenType, Type, TypeStorage> {
-public:
-  // Used for generic hooks in TypeBase.
-  using Base::Base;
-};
-} // namespace luminous
-} // namespace mlir
+//namespace mlir {
+//namespace luminous {
+//class AsyncTokenType
+//    : public Type::TypeBase<AsyncTokenType, Type, TypeStorage> {
+//public:
+//  // Used for generic hooks in TypeBase.
+//  using Base::Base;
+//};
+//} // namespace luminous
+//} // namespace mlir
 
 #include "mlir/Dialect/Luminous/IR/LuminousOpsDialect.h.inc"
 

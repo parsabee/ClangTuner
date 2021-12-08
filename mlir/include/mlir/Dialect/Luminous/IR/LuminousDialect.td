@@ -23,6 +23,7 @@ def Luminous_Dialect : Dialect {
   let name = "luminous";
   let cppNamespace = "::mlir::luminous";
   let dependentDialects = ["::mlir::LLVM::LLVMDialect"];
+  let hasOperationAttrVerify = 1;
 
   let extraClassDeclaration = [{
     /// Get the name of the attribute used to annotate the modules that contain

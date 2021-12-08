@@ -19,9 +19,18 @@ include "mlir/Dialect/Luminous/IR/LuminousDialect.td"
 // Luminous types
 //===----------------------------------------------------------------------===//
 
-def Luminous_AsyncToken : DialectType<
-      Luminous_Dialect,CPred<"$_self.isa<::mlir::luminous::AsyncTokenType>()">,
-      "async token type">,
-  BuildableType<"mlir::luminous::AsyncTokenType::get($_builder.getContext())">;
+
+class Luminous_Type<string name, string typeMnemonic> :
+    TypeDef<Luminous_Dialect, name> {
+  let mnemonic = typeMnemonic;
+}
+
+def Luminous_AsyncTokenType : Luminous_Type<"AsyncToken", "async_token"> {
+  let summary = "async token type";
+  let description = [{
+    `luminous.async_token` is a type returned by luminous operations, and it
+    becomes `available` when the operations that created it is completed.
+  }];
+}
 
 #endif // MLIR_DIALECT_LUMINOUS_IR_ASYNCTYPES
