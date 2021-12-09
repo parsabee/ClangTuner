@@ -2,20 +2,25 @@
 
 module attributes {luminous.container_module} {
   luminous.module @kernels {
-    luminous.func @kernel_1(%arg0: memref<?xf32, 1>) {
-      luminous.return
-    }
-    luminous.func @kernel_2(%arg0: f32, %arg1: memref<?xf32, 1>) {
-      luminous.return
-    }
+    // CHECK-LABEL: luminous.module @kernel
   }
 
-  func @function(%arg0 : f32, %arg1 : memref<?xf32, 1>) {
-    %c64 = constant 64 : index
-    %c128 = constant 128 : index
-    %t0 = luminous.dispatch @kernels::@kernel_1 <%c64,%c128> (%arg1 : memref<?xf32, 1>)
-    %t1 = luminous.dispatch [%t0] @kernels::@kernel_2 <%c64,%c128> (%arg0 : f32, %arg1 : memref<?xf32, 1>)
-    luminous.wait [%t1]
+  func @function() {
+    // CHECK-LABEL: func @function()
+    // CHECK: {{.*}} = luminous.wait async
+    %t0 = luminous.wait async
+    // CHECK: {{.*}} = luminous.wait async
+    %t1 = luminous.wait async
+    // CHECK: {{.*}} = luminous.wait async [{{.*}}, {{.*}}]
+    %t2 = luminous.wait async [%t0, %t1]
+    // CHECK: luminous.wait [{{.*}}]
+    luminous.wait [%t2]
     return
+  }
+
+  func @async_token(%arg0 : !luminous.async_token) -> !luminous.async_token {
+    // CHECK-LABEL: func @async_token({{.*}}: !luminous.async_token)
+    // CHECK: return {{.*}} : !luminous.async_token
+    return %arg0 : !luminous.async_token
   }
 }

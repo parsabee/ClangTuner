@@ -15,15 +15,14 @@
 
 include "mlir/Dialect/Luminous/IR/LuminousDialect.td"
 
-//===----------------------------------------------------------------------===//
-// Luminous types
-//===----------------------------------------------------------------------===//
-
-
 class Luminous_Type<string name, string typeMnemonic> :
     TypeDef<Luminous_Dialect, name> {
   let mnemonic = typeMnemonic;
 }
+
+//===----------------------------------------------------------------------===//
+// AsyncToken
+//===----------------------------------------------------------------------===//
 
 def Luminous_AsyncTokenType : Luminous_Type<"AsyncToken", "async_token"> {
   let summary = "async token type";
