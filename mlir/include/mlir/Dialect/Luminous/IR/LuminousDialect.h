@@ -1,6 +1,14 @@
+//===- LuminousDialect.h - Luminous Dialect ---------------------*- C++ -*-===//
 //
-// Created by Parsa Bagheri on 11/23/21.
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
+//===----------------------------------------------------------------------===//
+//
+// This file defines the Luminous dialect.
+//
+//===----------------------------------------------------------------------===//
 
 #ifndef MLIR_DIALECT_LUMINOUS_LUMINOUSDIALECT_H
 #define MLIR_DIALECT_LUMINOUS_LUMINOUSDIALECT_H
@@ -16,17 +24,6 @@
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
-
-//namespace mlir {
-//namespace luminous {
-//class AsyncTokenType
-//    : public Type::TypeBase<AsyncTokenType, Type, TypeStorage> {
-//public:
-//  // Used for generic hooks in TypeBase.
-//  using Base::Base;
-//};
-//} // namespace luminous
-//} // namespace mlir
 
 #include "mlir/Dialect/Luminous/IR/LuminousOpsDialect.h.inc"
 
