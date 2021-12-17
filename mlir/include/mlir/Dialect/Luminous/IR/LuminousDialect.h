@@ -14,16 +14,14 @@
 #define MLIR_DIALECT_LUMINOUS_LUMINOUSDIALECT_H
 
 #include "mlir/Dialect/DLTI/Traits.h"
-#include "mlir/Dialect/Luminous/IR/LuminousTypes.h"
-#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
-#include "mlir/IR/FunctionSupport.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/OpImplementation.h"
 #include "mlir/IR/SymbolTable.h"
-#include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/Async/IR/AsyncTypes.h"
 
 #include "mlir/Dialect/Luminous/IR/LuminousOpsDialect.h.inc"
 
