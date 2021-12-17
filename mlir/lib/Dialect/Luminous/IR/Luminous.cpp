@@ -59,9 +59,7 @@ static ParseResult parseLuminousModuleOp(OpAsmParser &parser,
   if (parser.parseRegion(*body, None, None))
     return failure();
 
-  // Ensure that this module has a valid terminator,
-  // The ` SingleBlockImplicitTerminator<"ModuleEndOp"> ' trait of module op
-  // provides following routine for that
+  // Ensure that this module has a valid terminator
   LuminousModuleOp::ensureTerminator(*body, parser.getBuilder(),
                                      result.location);
   return success();
