@@ -141,9 +141,7 @@ def Luminous_LuminousFuncOp : Luminous_Op<"func", [
 //===----------------------------------------------------------------------===//
 
 def Luminous_ReturnOp : Luminous_Op<"return", [HasParent<"LuminousFuncOp">,
-                                               NoSideEffect, Terminator]>,
-                        Arguments<(ins)>,
-                        Results<(outs)> {
+                                               NoSideEffect, Terminator]> {
   let summary = "Terminator for Luminous functions.";
   let description = [{
     A terminator operation for regions that appear in the body of `luminous.func`.
