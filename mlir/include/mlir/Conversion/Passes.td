@@ -438,6 +438,18 @@ def ConvertParallelLoopToGpu : Pass<"convert-parallel-loops-to-gpu"> {
 }
 
 //===----------------------------------------------------------------------===//
+// SCFToLuminous
+//===----------------------------------------------------------------------===//
+
+def ConvertParallelLoopToLuminousDispatch :
+    FunctionPass<"convert-parallel-to-luminous-dispatch"> {
+  let summary = "Convert top-level ParallelOps to luminous functions";
+  let constructor = "mlir::createConvertParallelForToLuminousDispatchPass()";
+  let dependentDialects = ["luminous::LuminousDialect",
+                           "async::AsyncDialect"];
+}
+
+//===----------------------------------------------------------------------===//
 // ShapeToStandard
 //===----------------------------------------------------------------------===//
 
