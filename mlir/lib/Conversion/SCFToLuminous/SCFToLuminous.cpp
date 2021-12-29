@@ -7,14 +7,16 @@
 //===----------------------------------------------------------------------===//
 //
 // This file implements a pass to convert scf.parallel operations into luminous
-// dispatches.
+// dispatches. This file contains copies of some static functions and types
+// from mlir/lib/Dialect/Async/Transform/AsyncParallelFor.cpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Conversion/SCFToLuminous/SCFToLuminous.h"
+#include "../../../lib/Dialect/Async/Transforms/PassDetail.h" /* cloneConstantsIntoTheRegion */
 #include "../PassDetail.h"
-#include "mlir/Dialect/Luminous/IR/LuminousDialect.h"
 #include "mlir/Dialect/Async/IR/Async.h"
+#include "mlir/Dialect/Luminous/IR/LuminousDialect.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
@@ -23,14 +25,58 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/RegionUtils.h"
 
-
 using namespace mlir;
 using namespace mlir::async;
+
+/// Copied from mlir/lib/Dialect/Async/Transform/AsyncParallelFor.cpp
+struct ParallelComputeFunctionType {
+  FunctionType type;
+  llvm::SmallVector<Value> captures;
+};
 
 struct ParallelComputeFunction {
   FuncOp func;
   llvm::SmallVector<Value> captures;
 };
+
+/// Copied from mlir/lib/Dialect/Async/Transform/AsyncParallelFor.cpp
+// Returns a function type and implicit captures for a parallel compute
+// function. We'll need a list of implicit captures to setup block and value
+// mapping when we'll clone the body of the parallel operation.
+static ParallelComputeFunctionType
+getParallelComputeFunctionType(scf::ParallelOp op, PatternRewriter &rewriter) {
+  // Values implicitly captured by the parallel operation.
+  llvm::SetVector<Value> captures;
+  getUsedValuesDefinedAbove(op.region(), op.region(), captures);
+
+  llvm::SmallVector<Type> inputs;
+  inputs.reserve(2 + 4 * op.getNumLoops() + captures.size());
+
+  Type indexTy = rewriter.getIndexType();
+
+  // One-dimensional iteration space defined by the block index and size.
+  inputs.push_back(indexTy); // blockIndex
+  inputs.push_back(indexTy); // blockSize
+
+  // Multi-dimensional parallel iteration space defined by the loop trip counts.
+  for (unsigned i = 0; i < op.getNumLoops(); ++i)
+    inputs.push_back(indexTy); // loop tripCount
+
+  // Parallel operation lower bound, upper bound and step.
+  for (unsigned i = 0; i < op.getNumLoops(); ++i) {
+    inputs.push_back(indexTy); // lower bound
+    inputs.push_back(indexTy); // upper bound
+    inputs.push_back(indexTy); // step
+  }
+
+  // Types of the implicit captures.
+  for (Value capture : captures)
+    inputs.push_back(capture.getType());
+
+  // Convert captures to vector for later convenience.
+  SmallVector<Value> capturesVector(captures.begin(), captures.end());
+  return {rewriter.getFunctionType(inputs, TypeRange()), capturesVector};
+}
 
 // Create a parallel compute fuction from the parallel operation.
 static ParallelComputeFunction
@@ -377,11 +423,10 @@ LogicalResult LuminousDispatchParallelRewrite::matchAndRewrite(
         createParallelComputeFunction(op, rewriter);
 
     doSequantialDispatch(b, rewriter, parallelComputeFunction, op, blockSize,
-                        blockCount, tripCounts);
+                         blockCount, tripCounts);
 
     nb.create<scf::YieldOp>();
   };
-
 }
 
 } // namespace
