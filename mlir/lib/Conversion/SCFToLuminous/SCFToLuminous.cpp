@@ -17,8 +17,10 @@
 #include "../PassDetail.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Luminous/IR/LuminousDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/DialectConversion.h"
@@ -27,247 +29,110 @@
 
 using namespace mlir;
 using namespace mlir::async;
+using namespace mlir::luminous;
+
+static constexpr char luminousModuleSymbol[] = "device_module";
+static constexpr char luminousAsyncFnSymbol[] = "async_fn";
 
 /// Copied from mlir/lib/Dialect/Async/Transform/AsyncParallelFor.cpp
-struct ParallelComputeFunctionType {
+struct AsyncFunctionType {
   FunctionType type;
   llvm::SmallVector<Value> captures;
 };
 
-struct ParallelComputeFunction {
-  FuncOp func;
+struct AsyncDispatchFunction {
+  LuminousFuncOp func;
   llvm::SmallVector<Value> captures;
 };
 
-/// Copied from mlir/lib/Dialect/Async/Transform/AsyncParallelFor.cpp
-// Returns a function type and implicit captures for a parallel compute
-// function. We'll need a list of implicit captures to setup block and value
-// mapping when we'll clone the body of the parallel operation.
-static ParallelComputeFunctionType
-getParallelComputeFunctionType(scf::ParallelOp op, PatternRewriter &rewriter) {
+static AsyncFunctionType getDispatchFunctionType(scf::ParallelOp op,
+                                                 PatternRewriter &rewriter) {
   // Values implicitly captured by the parallel operation.
-  llvm::SetVector<Value> captures;
-  getUsedValuesDefinedAbove(op.region(), op.region(), captures);
-
-  llvm::SmallVector<Type> inputs;
-  inputs.reserve(2 + 4 * op.getNumLoops() + captures.size());
-
-  Type indexTy = rewriter.getIndexType();
-
-  // One-dimensional iteration space defined by the block index and size.
-  inputs.push_back(indexTy); // blockIndex
-  inputs.push_back(indexTy); // blockSize
-
-  // Multi-dimensional parallel iteration space defined by the loop trip counts.
-  for (unsigned i = 0; i < op.getNumLoops(); ++i)
-    inputs.push_back(indexTy); // loop tripCount
-
-  // Parallel operation lower bound, upper bound and step.
-  for (unsigned i = 0; i < op.getNumLoops(); ++i) {
-    inputs.push_back(indexTy); // lower bound
-    inputs.push_back(indexTy); // upper bound
-    inputs.push_back(indexTy); // step
-  }
-
-  // Types of the implicit captures.
-  for (Value capture : captures)
-    inputs.push_back(capture.getType());
-
-  // Convert captures to vector for later convenience.
-  SmallVector<Value> capturesVector(captures.begin(), captures.end());
-  return {rewriter.getFunctionType(inputs, TypeRange()), capturesVector};
+  llvm::SetVector<Value> capturesSet;
+  getUsedValuesDefinedAbove(op.region(), op.region(), capturesSet);
+  auto captures = llvm::to_vector<6>(capturesSet);
+  auto inputs = llvm::to_vector<6>(
+      llvm::map_range(captures, [](Value &val) { return val.getType(); }));
+  return {rewriter.getFunctionType(inputs, TypeRange()), std::move(captures)};
 }
 
-// Create a parallel compute fuction from the parallel operation.
-static ParallelComputeFunction
-createParallelComputeFunction(scf::ParallelOp op, PatternRewriter &rewriter) {
-  OpBuilder::InsertionGuard guard(rewriter);
-  ImplicitLocOpBuilder b(op.getLoc(), rewriter);
+static Optional<LuminousModuleOp> findLuminousModule(ModuleOp module) {
+  auto *luminousModule = module.lookupSymbol(luminousModuleSymbol);
+  return luminousModule ? LuminousModuleOp(luminousModule) : nullptr;
+}
 
+static LuminousModuleOp createLuminousModule(ModuleOp module) {
+  OpBuilder builder(module.getContext());
+  ImplicitLocOpBuilder b(module.getLoc(), builder);
+  auto luminousModule = b.create<LuminousModuleOp>(luminousModuleSymbol);
+  module->setAttr(LuminousDialect::getContainerModuleAttrName(),
+                  UnitAttr::get(module.getContext()));
+
+  // Insert function into the module symbol table and assign it unique name.
+  SymbolTable symbolTable(module);
+  symbolTable.insert(luminousModule);
+
+  return luminousModule;
+}
+
+/// Finds the LuminousModuleOp in `op's parent module if it exists,
+/// otherwise creates a new LuminousModuleOp.
+static Optional<LuminousModuleOp> getLuminousModule(scf::ParallelOp op) {
   ModuleOp module = op->getParentOfType<ModuleOp>();
+  if (module->hasAttr(LuminousDialect::getContainerModuleAttrName())) {
+    return findLuminousModule(module);
+  }
+  return createLuminousModule(module);
+}
+
+static AsyncDispatchFunction getLuminousFunction(scf::ParallelOp op,
+                                                 PatternRewriter &rewriter) {
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  ModuleOp module = op->getParentOfType<ModuleOp>();
+  OpBuilder builder(module.getContext());
+  ImplicitLocOpBuilder b(op.getLoc(), rewriter);
 
   // Make sure that all constants will be inside the parallel operation body to
   // reduce the number of parallel compute function arguments.
   cloneConstantsIntoTheRegion(op.getLoopBody(), rewriter);
 
-  ParallelComputeFunctionType computeFuncType =
-      getParallelComputeFunctionType(op, rewriter);
+  auto parallelFuncType = getDispatchFunctionType(op, rewriter);
+  auto &type = parallelFuncType.type;
+  auto luminousFunc =
+      builder.create<LuminousFuncOp>(op.getLoc(), luminousAsyncFnSymbol, type);
 
-  FunctionType type = computeFuncType.type;
-  FuncOp func = FuncOp::create(op.getLoc(), "parallel_compute_fn", type);
-  func.setPrivate();
-
+  auto luminousModule = getLuminousModule(op).getValue(); // asserts that it has
+                                                          // value
   // Insert function into the module symbol table and assign it unique name.
-  SymbolTable symbolTable(module);
-  symbolTable.insert(func);
-  rewriter.getListener()->notifyOperationInserted(func);
+  SymbolTable symbolTable(luminousModule);
+  symbolTable.insert(luminousFunc);
+  rewriter.getListener()->notifyOperationInserted(luminousFunc);
 
   // Create function entry block.
-  Block *block = b.createBlock(&func.getBody(), func.begin(), type.getInputs());
+  Block *block = b.createBlock(&luminousFunc.getBody(), luminousFunc.begin(),
+                               type.getInputs());
   b.setInsertionPointToEnd(block);
 
-  unsigned offset = 0; // argument offset for arguments decoding
+  // Copy the body of the parallel op into the inner-most loop.
+  BlockAndValueMapping mapping;
+  for (auto &bodyOp : op.getLoopBody().getOps())
+    b.clone(bodyOp, mapping);
 
-  // Returns `numArguments` arguments starting from `offset` and updates offset
-  // by moving forward to the next argument.
-  auto getArguments = [&](unsigned numArguments) -> ArrayRef<Value> {
-    auto args = block->getArguments();
-    auto slice = args.drop_front(offset).take_front(numArguments);
-    offset += numArguments;
-    return {slice.begin(), slice.end()};
-  };
-
-  // Block iteration position defined by the block index and size.
-  Value blockIndex = block->getArgument(offset++);
-  Value blockSize = block->getArgument(offset++);
-
-  // Constants used below.
-  Value c0 = b.create<ConstantIndexOp>(0);
-  Value c1 = b.create<ConstantIndexOp>(1);
-
-  // Multi-dimensional parallel iteration space defined by the loop trip counts.
-  ArrayRef<Value> tripCounts = getArguments(op.getNumLoops());
-
-  // Compute a product of trip counts to get the size of the flattened
-  // one-dimensional iteration space.
-  Value tripCount = tripCounts[0];
-  for (unsigned i = 1; i < tripCounts.size(); ++i)
-    tripCount = b.create<MulIOp>(tripCount, tripCounts[i]);
-
-  // Parallel operation lower bound and step.
-  ArrayRef<Value> lowerBound = getArguments(op.getNumLoops());
-  offset += op.getNumLoops(); // skip upper bound arguments
-  ArrayRef<Value> step = getArguments(op.getNumLoops());
-
-  // Remaining arguments are implicit captures of the parallel operation.
-  ArrayRef<Value> captures = getArguments(block->getNumArguments() - offset);
-
-  // Find one-dimensional iteration bounds: [blockFirstIndex, blockLastIndex]:
-  //   blockFirstIndex = blockIndex * blockSize
-  Value blockFirstIndex = b.create<MulIOp>(blockIndex, blockSize);
-
-  // The last one-dimensional index in the block defined by the `blockIndex`:
-  //   blockLastIndex = max(blockFirstIndex + blockSize, tripCount) - 1
-  Value blockEnd0 = b.create<AddIOp>(blockFirstIndex, blockSize);
-  Value blockEnd1 = b.create<CmpIOp>(CmpIPredicate::sge, blockEnd0, tripCount);
-  Value blockEnd2 = b.create<SelectOp>(blockEnd1, tripCount, blockEnd0);
-  Value blockLastIndex = b.create<SubIOp>(blockEnd2, c1);
-
-  // Convert one-dimensional indices to multi-dimensional coordinates.
-  auto blockFirstCoord = delinearize(b, blockFirstIndex, tripCounts);
-  auto blockLastCoord = delinearize(b, blockLastIndex, tripCounts);
-
-  // Compute loops upper bounds derived from the block last coordinates:
-  //   blockEndCoord[i] = blockLastCoord[i] + 1
-  //
-  // Block first and last coordinates can be the same along the outer compute
-  // dimension when inner compute dimension contains multiple blocks.
-  SmallVector<Value> blockEndCoord(op.getNumLoops());
-  for (size_t i = 0; i < blockLastCoord.size(); ++i)
-    blockEndCoord[i] = b.create<AddIOp>(blockLastCoord[i], c1);
-
-  // Construct a loop nest out of scf.for operations that will iterate over
-  // all coordinates in [blockFirstCoord, blockLastCoord] range.
-  using LoopBodyBuilder =
-      std::function<void(OpBuilder &, Location, Value, ValueRange)>;
-  using LoopNestBuilder = std::function<LoopBodyBuilder(size_t loopIdx)>;
-
-  // Parallel region induction variables computed from the multi-dimensional
-  // iteration coordinate using parallel operation bounds and step:
-  //
-  //   computeBlockInductionVars[loopIdx] =
-  //       lowerBound[loopIdx] + blockCoord[loopIdx] * step[loopDdx]
-  SmallVector<Value> computeBlockInductionVars(op.getNumLoops());
-
-  // We need to know if we are in the first or last iteration of the
-  // multi-dimensional loop for each loop in the nest, so we can decide what
-  // loop bounds should we use for the nested loops: bounds defined by compute
-  // block interval, or bounds defined by the parallel operation.
-  //
-  // Example: 2d parallel operation
-  //                   i   j
-  //   loop sizes:   [50, 50]
-  //   first coord:  [25, 25]
-  //   last coord:   [30, 30]
-  //
-  // If `i` is equal to 25 then iteration over `j` should start at 25, when `i`
-  // is between 25 and 30 it should start at 0. The upper bound for `j` should
-  // be 50, except when `i` is equal to 30, then it should also be 30.
-  //
-  // Value at ith position specifies if all loops in [0, i) range of the loop
-  // nest are in the first/last iteration.
-  SmallVector<Value> isBlockFirstCoord(op.getNumLoops());
-  SmallVector<Value> isBlockLastCoord(op.getNumLoops());
-
-  // Builds inner loop nest inside async.execute operation that does all the
-  // work concurrently.
-  LoopNestBuilder workLoopBuilder = [&](size_t loopIdx) -> LoopBodyBuilder {
-    return [&, loopIdx](OpBuilder &nestedBuilder, Location loc, Value iv,
-                        ValueRange args) {
-      ImplicitLocOpBuilder nb(loc, nestedBuilder);
-
-      // Compute induction variable for `loopIdx`.
-      computeBlockInductionVars[loopIdx] = nb.create<AddIOp>(
-          lowerBound[loopIdx], nb.create<MulIOp>(iv, step[loopIdx]));
-
-      // Check if we are inside first or last iteration of the loop.
-      isBlockFirstCoord[loopIdx] =
-          nb.create<CmpIOp>(CmpIPredicate::eq, iv, blockFirstCoord[loopIdx]);
-      isBlockLastCoord[loopIdx] =
-          nb.create<CmpIOp>(CmpIPredicate::eq, iv, blockLastCoord[loopIdx]);
-
-      // Check if the previous loop is in its first or last iteration.
-      if (loopIdx > 0) {
-        isBlockFirstCoord[loopIdx] = nb.create<AndOp>(
-            isBlockFirstCoord[loopIdx], isBlockFirstCoord[loopIdx - 1]);
-        isBlockLastCoord[loopIdx] = nb.create<AndOp>(
-            isBlockLastCoord[loopIdx], isBlockLastCoord[loopIdx - 1]);
-      }
-
-      // Keep building loop nest.
-      if (loopIdx < op.getNumLoops() - 1) {
-        // Select nested loop lower/upper bounds depending on out position in
-        // the multi-dimensional iteration space.
-        auto lb = nb.create<SelectOp>(isBlockFirstCoord[loopIdx],
-                                      blockFirstCoord[loopIdx + 1], c0);
-
-        auto ub = nb.create<SelectOp>(isBlockLastCoord[loopIdx],
-                                      blockEndCoord[loopIdx + 1],
-                                      tripCounts[loopIdx + 1]);
-
-        nb.create<scf::ForOp>(lb, ub, c1, ValueRange(),
-                              workLoopBuilder(loopIdx + 1));
-        nb.create<scf::YieldOp>(loc);
-        return;
-      }
-
-      // Copy the body of the parallel op into the inner-most loop.
-      BlockAndValueMapping mapping;
-      mapping.map(op.getInductionVars(), computeBlockInductionVars);
-      mapping.map(computeFuncType.captures, captures);
-
-      for (auto &bodyOp : op.getLoopBody().getOps())
-        nb.clone(bodyOp, mapping);
-    };
-  };
-
-  b.create<scf::ForOp>(blockFirstCoord[0], blockEndCoord[0], c1, ValueRange(),
-                       workLoopBuilder(0));
-  b.create<ReturnOp>(ValueRange());
-
-  return {func, std::move(computeFuncType.captures)};
+  return {luminousFunc, std::move(parallelFuncType.captures)};
 }
 
 // Dispatch parallel compute functions by submitting all async compute tasks
 // from a simple for loop in the caller thread.
-static void
-doSequantialDispatch(ImplicitLocOpBuilder &b, PatternRewriter &rewriter,
-                     ParallelComputeFunction &parallelComputeFunction,
-                     scf::ParallelOp op, Value blockSize, Value blockCount,
-                     const SmallVector<Value> &tripCounts) {
+static void doSequantialDispatch(ImplicitLocOpBuilder &b,
+                                 PatternRewriter &rewriter,
+                                 AsyncDispatchFunction &asyncFunction,
+                                 scf::ParallelOp op, Value blockSize,
+                                 Value blockCount,
+                                 const SmallVector<Value> &tripCounts) {
   MLIRContext *ctx = op->getContext();
 
-  FuncOp compute = parallelComputeFunction.func;
+  auto &func = asyncFunction.func;
 
   Value c0 = b.create<ConstantIndexOp>(0);
   Value c1 = b.create<ConstantIndexOp>(1);
@@ -282,47 +147,37 @@ doSequantialDispatch(ImplicitLocOpBuilder &b, PatternRewriter &rewriter,
   using LoopBodyBuilder =
       std::function<void(OpBuilder &, Location, Value, ValueRange)>;
 
-  // Returns parallel compute function operands to process the given block.
-  auto computeFuncOperands = [&](Value blockIndex) -> SmallVector<Value> {
-    SmallVector<Value> computeFuncOperands = {blockIndex, blockSize};
-    computeFuncOperands.append(tripCounts);
-    computeFuncOperands.append(op.lowerBound().begin(), op.lowerBound().end());
-    computeFuncOperands.append(op.upperBound().begin(), op.upperBound().end());
-    computeFuncOperands.append(op.step().begin(), op.step().end());
-    computeFuncOperands.append(parallelComputeFunction.captures);
-    return computeFuncOperands;
-  };
-
   // Induction variable is the index of the block: [0, blockCount).
   LoopBodyBuilder loopBuilder = [&](OpBuilder &loopBuilder, Location loc,
                                     Value iv, ValueRange args) {
     ImplicitLocOpBuilder nb(loc, loopBuilder);
-
-    // Call parallel compute function inside the async.execute region.
-    auto executeBodyBuilder = [&](OpBuilder &executeBuilder,
-                                  Location executeLoc, ValueRange executeArgs) {
-      executeBuilder.create<CallOp>(executeLoc, compute.sym_name(),
-                                    compute.getCallableResults(),
-                                    computeFuncOperands(iv));
-      executeBuilder.create<async::YieldOp>(executeLoc, ValueRange());
-    };
-
-    // Create async.execute operation to launch parallel computate function.
-    auto execute = nb.create<ExecuteOp>(TypeRange(), ValueRange(), ValueRange(),
-                                        executeBodyBuilder);
-    nb.create<AddToGroupOp>(rewriter.getIndexType(), execute.token(), group);
+    auto dispatch =
+        nb.create<DispatchOp>(func, ValueRange(), asyncFunction.captures);
+    nb.create<AddToGroupOp>(rewriter.getIndexType(), dispatch.asyncToken(),
+                            group);
     nb.create<scf::YieldOp>();
   };
 
   // Iterate over all compute blocks and launch parallel compute operations.
-  b.create<scf::ForOp>(c1, blockCount, c1, ValueRange(), loopBuilder);
-
-  // Call parallel compute function for the first block in the caller thread.
-  b.create<CallOp>(compute.sym_name(), compute.getCallableResults(),
-                   computeFuncOperands(c0));
+  b.create<scf::ForOp>(c0, blockCount, c1, ValueRange(), loopBuilder);
 
   // Wait for the completion of all async compute operations.
   b.create<AwaitAllOp>(group);
+}
+
+static ConversionTarget
+createAndConfigureConversionTarget(MLIRContext &context) {
+  ConversionTarget target(context);
+  // TODO do we need this?
+  target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+  target.addLegalDialect<memref::MemRefDialect>();
+  target.addLegalDialect<async::AsyncDialect>();
+  //  target.addDynamicallyLegalOp<scf::ParallelOp>([](scf::ParallelOp
+  //  parallelOp) {
+  //    return !parallelOp->hasAttr(gpu::getMappingAttrName()) ||
+  //           parallelOp->hasAttr(kVisitedAttrName);
+  //  });
+  return target;
 }
 
 namespace {
@@ -345,9 +200,9 @@ struct SCFToLuminousPass
 
     RewritePatternSet patterns(ctx);
     patterns.add<LuminousDispatchParallelRewrite>(ctx);
-
-    if (failed(
-            applyPatternsAndFoldGreedily(getOperation(), std::move(patterns))))
+    auto target = createAndConfigureConversionTarget(*ctx);
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns))))
       signalPassFailure();
   }
 };
@@ -355,6 +210,7 @@ struct SCFToLuminousPass
 LogicalResult LuminousDispatchParallelRewrite::matchAndRewrite(
     scf::ParallelOp op, PatternRewriter &rewriter) const {
 
+  llvm::errs() << "here\n";
   // TODO: add an attribute to the parallel op and check its presence here
 
   // We do not currently support rewrite for parallel op with reductions.
@@ -380,53 +236,13 @@ LogicalResult LuminousDispatchParallelRewrite::matchAndRewrite(
   for (size_t i = 1; i < tripCounts.size(); ++i)
     tripCount = b.create<MulIOp>(tripCount, tripCounts[i]);
 
-  // Compute the parallel block size and dispatch concurrent tasks computing
-  // results for each block.
-  auto dispatch = [&](OpBuilder &nestedBuilder, Location loc) {
-    ImplicitLocOpBuilder nb(loc, nestedBuilder);
+  // Compute balanced block size for the estimated block count.
+  Value blockSize = b.create<ConstantIndexOp>(1);
 
-    // With large number of threads the value of creating many compute blocks
-    // is reduced because the problem typically becomes memory bound. For small
-    // number of threads it helps with stragglers.
-    float overshardingFactor = numWorkerThreads <= 4    ? 8.0
-                               : numWorkerThreads <= 8  ? 4.0
-                               : numWorkerThreads <= 16 ? 2.0
-                               : numWorkerThreads <= 32 ? 1.0
-                               : numWorkerThreads <= 64 ? 0.8
-                                                        : 0.6;
-
-    // Do not overload worker threads with too many compute blocks.
-    Value maxComputeBlocks = b.create<ConstantIndexOp>(
-        std::max(1, static_cast<int>(numWorkerThreads * overshardingFactor)));
-
-    // Target block size from the pass parameters.
-    Value targetComputeBlock = b.create<ConstantIndexOp>(targetBlockSize);
-
-    // Compute parallel block size from the parallel problem size:
-    //   blockSize = min(tripCount,
-    //                   max(ceil_div(tripCount, maxComputeBlocks),
-    //                       targetComputeBlock))
-    Value bs0 = b.create<SignedCeilDivIOp>(tripCount, maxComputeBlocks);
-    Value bs1 = b.create<CmpIOp>(CmpIPredicate::sge, bs0, targetComputeBlock);
-    Value bs2 = b.create<SelectOp>(bs1, bs0, targetComputeBlock);
-    Value bs3 = b.create<CmpIOp>(CmpIPredicate::sle, tripCount, bs2);
-    Value blockSize0 = b.create<SelectOp>(bs3, tripCount, bs2);
-    Value blockCount0 = b.create<SignedCeilDivIOp>(tripCount, blockSize0);
-
-    // Compute balanced block size for the estimated block count.
-    Value blockSize = b.create<SignedCeilDivIOp>(tripCount, blockCount0);
-    Value blockCount = b.create<SignedCeilDivIOp>(tripCount, blockSize);
-
-    // Create a parallel compute function that takes a block id and computes the
-    // parallel operation body for a subset of iteration space.
-    ParallelComputeFunction parallelComputeFunction =
-        createParallelComputeFunction(op, rewriter);
-
-    doSequantialDispatch(b, rewriter, parallelComputeFunction, op, blockSize,
-                         blockCount, tripCounts);
-
-    nb.create<scf::YieldOp>();
-  };
+  auto luminousFunction = getLuminousFunction(op, rewriter);
+  doSequantialDispatch(b, rewriter, luminousFunction, op, blockSize, tripCount,
+                       tripCounts);
+  return success();
 }
 
 } // namespace

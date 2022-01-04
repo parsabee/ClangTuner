@@ -117,12 +117,12 @@ private:
   int32_t targetBlockSize;
 };
 
-struct ParallelComputeFunctionType {
+struct AsyncFunctionType {
   FunctionType type;
   llvm::SmallVector<Value> captures;
 };
 
-struct ParallelComputeFunction {
+struct AsyncDispatchFunction {
   FuncOp func;
   llvm::SmallVector<Value> captures;
 };
@@ -147,7 +147,7 @@ static SmallVector<Value> delinearize(ImplicitLocOpBuilder &b, Value index,
 // Returns a function type and implicit captures for a parallel compute
 // function. We'll need a list of implicit captures to setup block and value
 // mapping when we'll clone the body of the parallel operation.
-static ParallelComputeFunctionType
+static AsyncFunctionType
 getParallelComputeFunctionType(scf::ParallelOp op, PatternRewriter &rewriter) {
   // Values implicitly captured by the parallel operation.
   llvm::SetVector<Value> captures;
@@ -183,7 +183,7 @@ getParallelComputeFunctionType(scf::ParallelOp op, PatternRewriter &rewriter) {
 }
 
 // Create a parallel compute fuction from the parallel operation.
-static ParallelComputeFunction
+static AsyncDispatchFunction
 createParallelComputeFunction(scf::ParallelOp op, PatternRewriter &rewriter) {
   OpBuilder::InsertionGuard guard(rewriter);
   ImplicitLocOpBuilder b(op.getLoc(), rewriter);
@@ -194,7 +194,7 @@ createParallelComputeFunction(scf::ParallelOp op, PatternRewriter &rewriter) {
   // reduce the number of parallel compute function arguments.
   cloneConstantsIntoTheRegion(op.getLoopBody(), rewriter);
 
-  ParallelComputeFunctionType computeFuncType =
+  AsyncFunctionType computeFuncType =
       getParallelComputeFunctionType(op, rewriter);
 
   FunctionType type = computeFuncType.type;
@@ -381,7 +381,7 @@ createParallelComputeFunction(scf::ParallelOp op, PatternRewriter &rewriter) {
 //     call @parallel_compute_fn(%block_start, %block_size, ...);
 //   }
 //
-static FuncOp createAsyncDispatchFunction(ParallelComputeFunction &computeFunc,
+static FuncOp createAsyncDispatchFunction(AsyncDispatchFunction &computeFunc,
                                           PatternRewriter &rewriter) {
   OpBuilder::InsertionGuard guard(rewriter);
   Location loc = computeFunc.func.getLoc();
@@ -494,7 +494,7 @@ static FuncOp createAsyncDispatchFunction(ParallelComputeFunction &computeFunc,
 
 // Launch async dispatch of the parallel compute function.
 static void doAsyncDispatch(ImplicitLocOpBuilder &b, PatternRewriter &rewriter,
-                            ParallelComputeFunction &parallelComputeFunction,
+                            AsyncDispatchFunction &parallelComputeFunction,
                             scf::ParallelOp op, Value blockSize,
                             Value blockCount,
                             const SmallVector<Value> &tripCounts) {
@@ -565,7 +565,7 @@ static void doAsyncDispatch(ImplicitLocOpBuilder &b, PatternRewriter &rewriter,
 // from a simple for loop in the caller thread.
 static void
 doSequantialDispatch(ImplicitLocOpBuilder &b, PatternRewriter &rewriter,
-                     ParallelComputeFunction &parallelComputeFunction,
+                                 AsyncDispatchFunction &parallelComputeFunction,
                      scf::ParallelOp op, Value blockSize, Value blockCount,
                      const SmallVector<Value> &tripCounts) {
   MLIRContext *ctx = op->getContext();
@@ -703,7 +703,7 @@ AsyncParallelForRewrite::matchAndRewrite(scf::ParallelOp op,
 
     // Create a parallel compute function that takes a block id and computes the
     // parallel operation body for a subset of iteration space.
-    ParallelComputeFunction parallelComputeFunction =
+    AsyncDispatchFunction parallelComputeFunction =
         createParallelComputeFunction(op, rewriter);
 
     // Dispatch parallel compute function using async recursive work splitting,
