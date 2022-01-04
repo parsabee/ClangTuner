@@ -165,28 +165,24 @@ static void doSequantialDispatch(ImplicitLocOpBuilder &b,
   b.create<AwaitAllOp>(group);
 }
 
-static ConversionTarget
-createAndConfigureConversionTarget(MLIRContext &context) {
-  ConversionTarget target(context);
-  // TODO do we need this?
-  target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
-  target.addLegalDialect<memref::MemRefDialect>();
-  target.addLegalDialect<async::AsyncDialect>();
-  //  target.addDynamicallyLegalOp<scf::ParallelOp>([](scf::ParallelOp
-  //  parallelOp) {
-  //    return !parallelOp->hasAttr(gpu::getMappingAttrName()) ||
-  //           parallelOp->hasAttr(kVisitedAttrName);
-  //  });
-  return target;
-}
+namespace mlir {
+namespace luminous {
+struct ConversionTarget : public ::mlir::ConversionTarget {
+  ConversionTarget(MLIRContext &ctx) : ::mlir::ConversionTarget(ctx) {
+    addLegalDialect<LuminousDialect,
+                    memref::MemRefDialect,
+                    async::AsyncDialect>();
+    markUnknownOpDynamicallyLegal([](Operation *) { return true; });
+  }
+};
+} // namespace luminous
+} // namespace mlir
 
 namespace {
 
 struct LuminousDispatchParallelRewrite
     : public OpRewritePattern<scf::ParallelOp> {
-public:
-  LuminousDispatchParallelRewrite(MLIRContext *ctx) : OpRewritePattern(ctx) {}
-
+  using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
   LogicalResult matchAndRewrite(scf::ParallelOp op,
                                 PatternRewriter &rewriter) const override;
 };
@@ -195,22 +191,24 @@ public:
 struct SCFToLuminousPass
     : public ConvertParallelLoopToLuminousDispatchBase<SCFToLuminousPass> {
   /// Pass entry point.
-  void runOnFunction() override {
+  void runOnOperation() override {
     MLIRContext *ctx = &getContext();
-
     RewritePatternSet patterns(ctx);
     patterns.add<LuminousDispatchParallelRewrite>(ctx);
-    auto target = createAndConfigureConversionTarget(*ctx);
+    mlir::luminous::ConversionTarget target(*ctx);
+    FrozenRewritePatternSet frps(std::move(patterns));
+    llvm::errs() << "here1\n";
+//    if (failed(applyPatternsAndFoldGreedily(getOperation(), frps)))
     if (failed(applyPartialConversion(getOperation(), target,
-                                      std::move(patterns))))
+                                      std::move(frps))))
       signalPassFailure();
   }
 };
 
 LogicalResult LuminousDispatchParallelRewrite::matchAndRewrite(
     scf::ParallelOp op, PatternRewriter &rewriter) const {
+  llvm::errs() << "here2\n";
 
-  llvm::errs() << "here\n";
   // TODO: add an attribute to the parallel op and check its presence here
 
   // We do not currently support rewrite for parallel op with reductions.
@@ -247,7 +245,6 @@ LogicalResult LuminousDispatchParallelRewrite::matchAndRewrite(
 
 } // namespace
 
-std::unique_ptr<OperationPass<FuncOp>>
-mlir::createConvertParallelForToLuminousDispatchPass() {
+std::unique_ptr<Pass> mlir::createConvertParallelForToLuminousDispatchPass() {
   return std::make_unique<SCFToLuminousPass>();
 }
