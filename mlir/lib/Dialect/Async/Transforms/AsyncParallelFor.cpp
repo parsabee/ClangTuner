@@ -502,7 +502,7 @@ static void doAsyncDispatch(ImplicitLocOpBuilder &b, PatternRewriter &rewriter,
 
   // Add one more level of indirection to dispatch parallel compute functions
   // using async operations and recursive work splitting.
-  FuncOp ParallelComputeFunction =
+  FuncOp asyncDispatchFunction =
       createAsyncDispatchFunction(parallelComputeFunction, rewriter);
 
   Value c0 = b.create<ConstantIndexOp>(0);
@@ -549,8 +549,8 @@ static void doAsyncDispatch(ImplicitLocOpBuilder &b, PatternRewriter &rewriter,
     SmallVector<Value> operands = {group, c0, blockCount, blockSize};
     appendBlockComputeOperands(operands);
 
-    nb.create<CallOp>(ParallelComputeFunction.sym_name(),
-                      ParallelComputeFunction.getCallableResults(), operands);
+    nb.create<CallOp>(asyncDispatchFunction.sym_name(),
+                      asyncDispatchFunction.getCallableResults(), operands);
     nb.create<scf::YieldOp>();
   };
 
@@ -565,7 +565,7 @@ static void doAsyncDispatch(ImplicitLocOpBuilder &b, PatternRewriter &rewriter,
 // from a simple for loop in the caller thread.
 static void
 doSequantialDispatch(ImplicitLocOpBuilder &b, PatternRewriter &rewriter,
-                                 ParallelComputeFunction &parallelComputeFunction,
+                     ParallelComputeFunction &parallelComputeFunction,
                      scf::ParallelOp op, Value blockSize, Value blockCount,
                      const SmallVector<Value> &tripCounts) {
   MLIRContext *ctx = op->getContext();
