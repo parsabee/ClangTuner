@@ -12,8 +12,10 @@
 #include <memory>
 
 namespace mlir {
-class Pass;
-std::unique_ptr<Pass> createConvertParallelForToLuminousDispatchPass();
+template<typename T>
+class OperationPass;
+class ModuleOp;
+std::unique_ptr<OperationPass<ModuleOp>> createConvertParallelForToLuminousDispatchPass();
 } // namespace mlir
 
 #endif // MLIR_CONVERSION_SCFTOLUMINOUS_SCFTOLUMINOUS_H
