@@ -355,5 +355,26 @@ static void printDispatchOpOperands(OpAsmPrinter &printer, Operation *,
   printer << ")";
 }
 
+//===----------------------------------------------------------------------===//
+// LaunchOp
+//===----------------------------------------------------------------------===//
+
+void LaunchOp::build(OpBuilder &builder, OperationState &result,
+                     ValueRange problemSize, ValueRange blockSize,
+                     ValueRange operands) {
+  result.addOperands(operands);
+  result.addOperands(blockSize);
+  Region *region = result.addRegion();
+  Block *block = new Block();
+  block->addArguments(blockSize);
+  block->addArguments(operands);
+  region->push_back(block);
+  SmallVector<int32_t, 2> segmentSizes{
+      static_cast<int32_t>(blockSize.size()),
+      static_cast<int32_t>(operands.size())};
+  result.addAttribute(getOperandSegmentSizeAttr(),
+                      builder.getI32VectorAttr(segmentSizes));
+}
+
 #define GET_OP_CLASSES
 #include "mlir/Dialect/Luminous/IR/LuminousOps.cpp.inc"

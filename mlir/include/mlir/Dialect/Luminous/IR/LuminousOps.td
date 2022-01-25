@@ -222,4 +222,34 @@ def Luminous_DispatchOp : Luminous_Op<"dispatch", [AttrSizedOperandSegments]>,
     attr-dict}];
 }
 
+//===----------------------------------------------------------------------===//
+// Luminous LaunchOp
+//===----------------------------------------------------------------------===//
+
+def Luminous_LaunchOp : Luminous_Op<"launch", [AttrSizedOperandSegments]>,
+                        Arguments<(ins Variadic<Index>:$problem_size,
+                                         Variadic<Index>:$block_size,
+                                         Variadic<AnyType>:$operands)> {
+  let summary = "luminous launch op";
+
+  let description = [{
+    Example:
+
+    ```mlir
+        module {
+            func @function(%arg0: memref<128xf32>) {
+            }
+        }
+    ```
+  }];
+
+  let regions = (region AnyRegion:$body);
+
+  let skipDefaultBuilders = 1;
+
+  let builders = [OpBuilder<(ins "ValueRange": $problemSize,
+                                 "ValueRange": $blockSize,
+                                 "ValueRange": $operands)>];
+}
+
 #endif // LUMINOUS_OPS
