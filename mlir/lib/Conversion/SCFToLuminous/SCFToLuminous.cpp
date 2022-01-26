@@ -53,6 +53,12 @@ static auto filterLinalgOps(scf::ParallelOp parallelOp) {
       parallelOp, [](Operation &op) { return isa<linalg::LinalgOp>(op); });
 }
 
+static SmallVector<Value, 4> getCaptures(scf::ParallelOp op) {
+  llvm::SetVector<Value> capturesSet;
+  getUsedValuesDefinedAbove(op.region(), op.region(), capturesSet);
+  return llvm::to_vector<4>(capturesSet);
+}
+
 static AsyncFunctionType getDispatchFunctionType(scf::ParallelOp op,
                                                  PatternRewriter &rewriter) {
   // Values implicitly captured by the parallel operation.
@@ -129,16 +135,16 @@ getAsyncDispatchFunction(scf::ParallelOp op, PatternRewriter &rewriter) {
                               luminousFunc.getBody().end());
   Block *block = &luminousFunc.body().back();
   b.setInsertionPointToEnd(block);
-//  block->addArguments()
+  //  block->addArguments()
   // Copy the body of the parallel op into the inner-most loop.
-//  BlockAndValueMapping mapping;
-//  for (auto &operation : op.getLoopBody().getOps())
-//    if (!isa<scf::YieldOp>(operation)) {
-//      auto *clone = b.clone(operation, mapping);
-//      mapping.map(op.getResults(), clone->getResults());
-//      mapping.map(op.getOperands(), clone->getOperands());
-//    }
-//  b.setInsertionPointToEnd(block);
+  //  BlockAndValueMapping mapping;
+  //  for (auto &operation : op.getLoopBody().getOps())
+  //    if (!isa<scf::YieldOp>(operation)) {
+  //      auto *clone = b.clone(operation, mapping);
+  //      mapping.map(op.getResults(), clone->getResults());
+  //      mapping.map(op.getOperands(), clone->getOperands());
+  //    }
+  //  b.setInsertionPointToEnd(block);
   b.create<luminous::ReturnOp>();
   block->dump();
   luminousModule.dump();
@@ -194,6 +200,7 @@ struct ConversionTarget : public ::mlir::ConversionTarget {
   ConversionTarget(MLIRContext &ctx) : ::mlir::ConversionTarget(ctx) {
     addLegalDialect<LuminousDialect, linalg::LinalgDialect,
                     memref::MemRefDialect, async::AsyncDialect>();
+    this->addIllegalOp<scf::ParallelOp>();
   }
 };
 } // namespace luminous
@@ -227,36 +234,84 @@ LogicalResult LuminousDispatchParallelRewrite::matchAndRewrite(
     scf::ParallelOp op, PatternRewriter &rewriter) const {
   // TODO: add an attribute to the parallel op and check its presence here
   // We do not currently support rewrite for parallel op with reductions.
+
+  auto module = op->getParentOfType<ModuleOp>();
+
   if (op.getNumReductions() != 0)
     return failure();
 
-  ImplicitLocOpBuilder b(op.getLoc(), rewriter);
-
-  // Compute trip count for each loop induction variable:
-  //   tripCount = ceil_div(upperBound - lowerBound, step);
-  SmallVector<Value> tripCounts(op.getNumLoops());
-  for (size_t i = 0; i < op.getNumLoops(); ++i) {
-    auto lb = op.lowerBound()[i];
-    auto ub = op.upperBound()[i];
-    auto step = op.step()[i];
-    auto range = b.create<SubIOp>(ub, lb);
-    tripCounts[i] = b.create<SignedCeilDivIOp>(range, step);
+  Region &parallelLoopBody = op.getLoopBody();
+  auto captures = getCaptures(op);
+  auto launchOp = rewriter.create<LaunchOp>(
+      op.getLoc(), op.upperBound(), op.step(), std::move(captures));
+  // Replace SCF yield with luminous return.
+  {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToEnd(op.getBody());
+    assert(llvm::hasSingleElement(op.region()) &&
+           "expected scf.parallel to have one block");
+    rewriter.replaceOpWithNewOp<luminous::ReturnOp>(
+        op.getBody()->getTerminator(), ValueRange());
   }
+  Block &block = launchOp.body().front();
+  {
+    ImplicitLocOpBuilder b(launchOp.getLoc(), rewriter);
+    OpBuilder::InsertionGuard guard(b);
 
-  // Compute a product of trip counts to get the 1-dimensional iteration space
-  // for the scf.parallel operation.
-  Value tripCount = tripCounts[0];
-  for (size_t i = 1; i < tripCounts.size(); ++i)
-    tripCount = b.create<MulIOp>(tripCount, tripCounts[i]);
+    //    b.setInsertionPointToEnd(&block);
+    //    b.create<luminous::ReturnOp>();
+    b.setInsertionPointToStart(&block);
 
-  // Compute balanced block size for the estimated block count.
-  Value blockSize = b.create<ConstantIndexOp>(1);
+    BlockAndValueMapping mapping;
+    mapping.map(&parallelLoopBody.front(), &block);
 
-  auto asyncFunc = getAsyncDispatchFunction(op, rewriter);
-  b.setInsertionPointAfter(op);
-  doSequantialDispatch(b, rewriter, asyncFunc, op, blockSize, tripCount,
-                       tripCounts);
-  rewriter.eraseOp(op);
+    for (auto &operation : parallelLoopBody.getOps())
+      b.clone(operation, mapping);
+  }
+//  for (auto &use: op->getUses())
+
+  //  op->erase();
+  //  for (auto argMap :
+  //       llvm::zip(op.getLoopBody().getOps(), block.getArguments())) {
+  //    auto &loopArg = std::get<0>(argMap);
+  //    auto &blockArg = std::get<1>(argMap);
+  //  }
+
+  //
+  //  ImplicitLocOpBuilder b(op.getLoc(), rewriter);
+  //
+  //  auto launchOp = rewriter.create<luminous::LaunchOp>(
+  //      op.getLoc(), op.upperBound(), op.step(), )
+  //
+  //                  // Compute trip count for each loop induction variable:
+  //                  //   tripCount = ceil_div(upperBound - lowerBound, step);
+  //                  SmallVector<Value>
+  //                      tripCounts(op.getNumLoops());
+  //  for (size_t i = 0; i < op.getNumLoops(); ++i) {
+  //    auto lb = op.lowerBound()[i];
+  //    auto ub = op.upperBound()[i];
+  //    auto step = op.step()[i];
+  //    auto range = b.create<SubIOp>(ub, lb);
+  //    tripCounts[i] = b.create<SignedCeilDivIOp>(range, step);
+  //  }
+  //
+  //  // Compute a product of trip counts to get the 1-dimensional iteration
+  //  space
+  //  // for the scf.parallel operation.
+  //  Value tripCount = tripCounts[0];
+  //  for (size_t i = 1; i < tripCounts.size(); ++i)
+  //    tripCount = b.create<MulIOp>(tripCount, tripCounts[i]);
+  //
+  //  // Compute balanced block size for the estimated block count.
+  //  Value blockSize = b.create<ConstantIndexOp>(1);
+  //
+  //  auto asyncFunc = getAsyncDispatchFunction(op, rewriter);
+  //  b.setInsertionPointAfter(op);
+  //  doSequantialDispatch(b, rewriter, asyncFunc, op, blockSize, tripCount,
+  //                       tripCounts);
+  //  rewriter.eraseOp(op);
+
+  module->dump();
   return success();
 }
 
