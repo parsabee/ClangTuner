@@ -248,6 +248,9 @@ def Luminous_LaunchOp : Luminous_Op<"launch", [AttrSizedOperandSegments]>,
 
   let builders = [OpBuilder<(ins "ValueRange": $shape,
                                  "ValueRange": $step)>];
+
+  let parser = [{ return parseLaunchOp(parser, result); }];
+  let printer = [{ return ::print(p, *this); }];
 }
 
 //===----------------------------------------------------------------------===//

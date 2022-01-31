@@ -229,28 +229,30 @@ LogicalResult LuminousDispatchParallelRewrite::matchAndRewrite(
   auto module = op->getParentOfType<ModuleOp>();
   if (op.getNumReductions() != 0)
     return failure();
-  auto launchOp = rewriter.replaceOpWithNewOp<LaunchOp>(op, op.upperBound(), op.step());
-//\
+  auto launchOp =
+      rewriter.replaceOpWithNewOp<LaunchOp>(op, op.upperBound(), op.step());
+
+  //\
 //  Region &parallelLoopBody = op.getLoopBody();
-//  //  auto captures = getCaptures(op);
-//  auto launchOp = rewriter.create<LaunchOp>(op.getLoc(), op.upperBound(),
-//                                            op.step(), ValueRange());
-//  {
-//    OpBuilder::InsertionGuard guard(rewriter);
-//    rewriter.createBlock(&launchOp.getRegion());
-    {
-      OpBuilder::InsertionGuard innerGuard(rewriter);
-      rewriter.setInsertionPointToEnd(op.getBody());
-      assert(llvm::hasSingleElement(op.region()) &&
-             "expected scf.parallel to have one block");
-      rewriter.replaceOpWithNewOp<luminous::YieldOp>(
-          op.getBody()->getTerminator());
-    }
-//    rewriter.inlineRegionBefore(op.getRegion(), launchOp.getRegion(),
-//                                launchOp.getRegion().begin());
-//  }
-//
-//  rewriter.replaceOp(op, {});
+  //  //  auto captures = getCaptures(op);
+  //  auto launchOp = rewriter.create<LaunchOp>(op.getLoc(), op.upperBound(),
+  //                                            op.step(), ValueRange());
+  //  {
+  //    OpBuilder::InsertionGuard guard(rewriter);
+  //    rewriter.createBlock(&launchOp.getRegion());
+  {
+    OpBuilder::InsertionGuard innerGuard(rewriter);
+    rewriter.setInsertionPointToEnd(op.getBody());
+    assert(llvm::hasSingleElement(op.region()) &&
+           "expected scf.parallel to have one block");
+    rewriter.replaceOpWithNewOp<luminous::YieldOp>(
+        op.getBody()->getTerminator());
+  }
+  //    rewriter.inlineRegionBefore(op.getRegion(), launchOp.getRegion(),
+  //                                launchOp.getRegion().begin());
+  //  }
+  //
+  //  rewriter.replaceOp(op, {});
   //  auto launchOp = rewriter.create<LaunchOp>(op.getLoc(), ValueRange(),
   //  ValueRange(), ValueRange()); SmallVector<Value> upperBound, step;
   //  BlockAndValueMapping mapping;
@@ -259,13 +261,13 @@ LogicalResult LuminousDispatchParallelRewrite::matchAndRewrite(
   //    auto ub = std::get<0>(p);
   //    ub.
   //  }
-    rewriter.inlineRegionBefore(op.getLoopBody(), launchOp.body(),
-    launchOp.body().begin());
+  rewriter.inlineRegionBefore(op.getLoopBody(), launchOp.body(),
+                              launchOp.body().begin());
   ////  rewriter.eraseOp(op);
   //  op->erase();
   //  auto module = launchOp->getParentOfType<ModuleOp>();
-//    module->dump();
-    return success();
+  //    module->dump();
+  return success();
 }
 
 } // namespace
