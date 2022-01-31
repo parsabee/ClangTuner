@@ -227,9 +227,8 @@ def Luminous_DispatchOp : Luminous_Op<"dispatch", [AttrSizedOperandSegments]>,
 //===----------------------------------------------------------------------===//
 
 def Luminous_LaunchOp : Luminous_Op<"launch", [AttrSizedOperandSegments]>,
-                        Arguments<(ins Variadic<Index>:$problem_size,
-                                         Variadic<Index>:$block_size,
-                                         Variadic<AnyType>:$operands)> {
+                        Arguments<(ins Variadic<Index>:$shape,
+                                         Variadic<Index>:$step)> {
   let summary = "luminous launch op";
 
   let description = [{
@@ -247,9 +246,22 @@ def Luminous_LaunchOp : Luminous_Op<"launch", [AttrSizedOperandSegments]>,
 
   let skipDefaultBuilders = 1;
 
-  let builders = [OpBuilder<(ins "ValueRange": $problemSize,
-                                 "ValueRange": $blockSize,
-                                 "ValueRange": $operands)>];
+  let builders = [OpBuilder<(ins "ValueRange": $shape,
+                                 "ValueRange": $step)>];
 }
 
+//===----------------------------------------------------------------------===//
+// Luminous YieldOp
+//===----------------------------------------------------------------------===//
+
+def Luminous_YieldOp : Luminous_Op<"yield", [HasParent<"LaunchOp">,
+                                             NoSideEffect, Terminator]> {
+  let summary = "Terminator for Luminous LaunchOp.";
+  let description = [{
+    A terminator operation for regions that appear in the body of `luminous.launch`.
+    Takes no operands.
+  }];
+
+  let assemblyFormat = "attr-dict";
+}
 #endif // LUMINOUS_OPS

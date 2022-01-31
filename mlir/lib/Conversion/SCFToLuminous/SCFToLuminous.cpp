@@ -194,18 +194,6 @@ static void doSequantialDispatch(ImplicitLocOpBuilder &b,
   b.create<AwaitAllOp>(group);
 }
 
-namespace mlir {
-namespace luminous {
-struct ConversionTarget : public ::mlir::ConversionTarget {
-  ConversionTarget(MLIRContext &ctx) : ::mlir::ConversionTarget(ctx) {
-    addLegalDialect<LuminousDialect, linalg::LinalgDialect,
-                    memref::MemRefDialect, async::AsyncDialect>();
-    this->addIllegalOp<scf::ParallelOp>();
-  }
-};
-} // namespace luminous
-} // namespace mlir
-
 namespace {
 
 struct LuminousDispatchParallelRewrite
@@ -215,104 +203,69 @@ struct LuminousDispatchParallelRewrite
                                 PatternRewriter &rewriter) const override;
 };
 
+/// Applies the conversion patterns in the given function.
+static LogicalResult applyPatterns(ModuleOp module) {
+  ConversionTarget target(*module.getContext());
+  target.addIllegalOp<scf::ParallelOp>();
+  target.addLegalDialect<LuminousDialect, LinalgDialect, AsyncDialect>();
+  RewritePatternSet patterns(module.getContext());
+  patterns.add<LuminousDispatchParallelRewrite>(module.getContext());
+  FrozenRewritePatternSet frozen(std::move(patterns));
+  return applyPartialConversion(module, target, frozen);
+}
+
 /// A pass converting SCF operations to OpenMP operations.
 struct SCFToLuminousPass
     : public ConvertParallelLoopToLuminousDispatchBase<SCFToLuminousPass> {
   /// Pass entry point.
   void runOnOperation() override {
-    MLIRContext *ctx = &getContext();
-    RewritePatternSet patterns(ctx);
-    patterns.add<LuminousDispatchParallelRewrite>(ctx);
-    mlir::luminous::ConversionTarget target(*ctx);
-    FrozenRewritePatternSet frozen(std::move(patterns));
-    if (failed(applyPartialConversion(getOperation(), target, frozen)))
+    if (failed(applyPatterns(getOperation())))
       signalPassFailure();
   }
 };
 
 LogicalResult LuminousDispatchParallelRewrite::matchAndRewrite(
     scf::ParallelOp op, PatternRewriter &rewriter) const {
-  // TODO: add an attribute to the parallel op and check its presence here
-  // We do not currently support rewrite for parallel op with reductions.
-
   auto module = op->getParentOfType<ModuleOp>();
-
   if (op.getNumReductions() != 0)
     return failure();
-
-  Region &parallelLoopBody = op.getLoopBody();
-  auto captures = getCaptures(op);
-  auto launchOp = rewriter.create<LaunchOp>(
-      op.getLoc(), op.upperBound(), op.step(), std::move(captures));
-  // Replace SCF yield with luminous return.
-  {
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPointToEnd(op.getBody());
-    assert(llvm::hasSingleElement(op.region()) &&
-           "expected scf.parallel to have one block");
-    rewriter.replaceOpWithNewOp<luminous::ReturnOp>(
-        op.getBody()->getTerminator(), ValueRange());
-  }
-  Block &block = launchOp.body().front();
-  {
-    ImplicitLocOpBuilder b(launchOp.getLoc(), rewriter);
-    OpBuilder::InsertionGuard guard(b);
-
-    //    b.setInsertionPointToEnd(&block);
-    //    b.create<luminous::ReturnOp>();
-    b.setInsertionPointToStart(&block);
-
-    BlockAndValueMapping mapping;
-    mapping.map(&parallelLoopBody.front(), &block);
-
-    for (auto &operation : parallelLoopBody.getOps())
-      b.clone(operation, mapping);
-  }
-//  for (auto &use: op->getUses())
-
+  auto launchOp = rewriter.replaceOpWithNewOp<LaunchOp>(op, op.upperBound(), op.step());
+//\
+//  Region &parallelLoopBody = op.getLoopBody();
+//  //  auto captures = getCaptures(op);
+//  auto launchOp = rewriter.create<LaunchOp>(op.getLoc(), op.upperBound(),
+//                                            op.step(), ValueRange());
+//  {
+//    OpBuilder::InsertionGuard guard(rewriter);
+//    rewriter.createBlock(&launchOp.getRegion());
+    {
+      OpBuilder::InsertionGuard innerGuard(rewriter);
+      rewriter.setInsertionPointToEnd(op.getBody());
+      assert(llvm::hasSingleElement(op.region()) &&
+             "expected scf.parallel to have one block");
+      rewriter.replaceOpWithNewOp<luminous::YieldOp>(
+          op.getBody()->getTerminator());
+    }
+//    rewriter.inlineRegionBefore(op.getRegion(), launchOp.getRegion(),
+//                                launchOp.getRegion().begin());
+//  }
+//
+//  rewriter.replaceOp(op, {});
+  //  auto launchOp = rewriter.create<LaunchOp>(op.getLoc(), ValueRange(),
+  //  ValueRange(), ValueRange()); SmallVector<Value> upperBound, step;
+  //  BlockAndValueMapping mapping;
+  //  for (auto p: llvm::zip(op.upperBound(), op.step())) {
+  ////    mapping.map(std::get<0>(p), upperBound);
+  //    auto ub = std::get<0>(p);
+  //    ub.
+  //  }
+    rewriter.inlineRegionBefore(op.getLoopBody(), launchOp.body(),
+    launchOp.body().begin());
+  ////  rewriter.eraseOp(op);
   //  op->erase();
-  //  for (auto argMap :
-  //       llvm::zip(op.getLoopBody().getOps(), block.getArguments())) {
-  //    auto &loopArg = std::get<0>(argMap);
-  //    auto &blockArg = std::get<1>(argMap);
-  //  }
-
-  //
-  //  ImplicitLocOpBuilder b(op.getLoc(), rewriter);
-  //
-  //  auto launchOp = rewriter.create<luminous::LaunchOp>(
-  //      op.getLoc(), op.upperBound(), op.step(), )
-  //
-  //                  // Compute trip count for each loop induction variable:
-  //                  //   tripCount = ceil_div(upperBound - lowerBound, step);
-  //                  SmallVector<Value>
-  //                      tripCounts(op.getNumLoops());
-  //  for (size_t i = 0; i < op.getNumLoops(); ++i) {
-  //    auto lb = op.lowerBound()[i];
-  //    auto ub = op.upperBound()[i];
-  //    auto step = op.step()[i];
-  //    auto range = b.create<SubIOp>(ub, lb);
-  //    tripCounts[i] = b.create<SignedCeilDivIOp>(range, step);
-  //  }
-  //
-  //  // Compute a product of trip counts to get the 1-dimensional iteration
-  //  space
-  //  // for the scf.parallel operation.
-  //  Value tripCount = tripCounts[0];
-  //  for (size_t i = 1; i < tripCounts.size(); ++i)
-  //    tripCount = b.create<MulIOp>(tripCount, tripCounts[i]);
-  //
-  //  // Compute balanced block size for the estimated block count.
-  //  Value blockSize = b.create<ConstantIndexOp>(1);
-  //
-  //  auto asyncFunc = getAsyncDispatchFunction(op, rewriter);
-  //  b.setInsertionPointAfter(op);
-  //  doSequantialDispatch(b, rewriter, asyncFunc, op, blockSize, tripCount,
-  //                       tripCounts);
-  //  rewriter.eraseOp(op);
-
-  module->dump();
-  return success();
+  //  auto module = launchOp->getParentOfType<ModuleOp>();
+//    module->dump();
+    return success();
 }
 
 } // namespace

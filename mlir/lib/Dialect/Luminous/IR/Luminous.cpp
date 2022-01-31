@@ -360,22 +360,15 @@ static void printDispatchOpOperands(OpAsmPrinter &printer, Operation *,
 //===----------------------------------------------------------------------===//
 
 void LaunchOp::build(OpBuilder &builder, OperationState &result,
-                     ValueRange problemSize, ValueRange blockSize,
-                     ValueRange operands) {
-  result.addOperands(problemSize);
-  result.addOperands(blockSize);
-  result.addOperands(operands);
-  Region *region = result.addRegion();
-  Block *block = new Block();
-  block->addArguments(blockSize);
-  block->addArguments(operands);
-  region->push_back(block);
+                     ValueRange shape, ValueRange step) {
+  result.addOperands(shape);
+  result.addOperands(step);
   SmallVector<int32_t, 3> segmentSizes{
-      static_cast<int32_t>(problemSize.size()),
-      static_cast<int32_t>(blockSize.size()),
-      static_cast<int32_t>(operands.size())};
+      static_cast<int32_t>(shape.size()),
+      static_cast<int32_t>(step.size())};
   result.addAttribute(getOperandSegmentSizeAttr(),
                       builder.getI32VectorAttr(segmentSizes));
+  result.addRegion();
 }
 
 #define GET_OP_CLASSES
