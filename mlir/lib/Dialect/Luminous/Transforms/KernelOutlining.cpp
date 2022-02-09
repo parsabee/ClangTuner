@@ -12,9 +12,9 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "../lib/Dialect/Async/Transforms/PassDetail.h" /* cloneConstantsIntoTheRegion */
 #include "PassDetail.h"
 #include "mlir/Conversion/SCFToLuminous/SCFToLuminous.h"
-#include "../lib/Dialect/Async/Transforms/PassDetail.h" /* cloneConstantsIntoTheRegion */
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Linalg/IR/LinalgOps.h"
 #include "mlir/Dialect/Luminous/IR/LuminousDialect.h"
@@ -54,6 +54,30 @@ static SmallVector<Value, 4> getCaptures(scf::ParallelOp op) {
   return llvm::to_vector<4>(capturesSet);
 }
 
+static AsyncFunctionType getLuminousFunctionType(ArrayRef<Operation *> ops,
+                                                 PatternRewriter &rewriter) {
+  // Values implicitly captured by the parallel operation.
+  BlockAndValueMapping mapping;
+  SmallVector<Type, 6> params;
+  SmallVector<Value, 6> args;
+  for (auto *op: ops) {
+    for (auto operand: op->getOperands()) {
+      params.push_back(operand.getType());
+      args.push_back(operand);
+      mapping.map(operand, args.back());
+    }
+  }
+
+//  llvm::SetVector<Value> capturesSet;
+//  auto loopBodyArgs = op.body().getArguments();
+//  capturesSet.insert(loopBodyArgs.begin(), loopBodyArgs.end());
+//  getUsedValuesDefinedAbove(op.getRegion(), op.getRegion(), capturesSet);
+//  auto captures = llvm::to_vector<6>(capturesSet);
+//  auto inputs = llvm::to_vector<6>(
+//      llvm::map_range(captures, [](Value &val) { return val.getType(); }));
+//  return {rewriter.getFunctionType(inputs, TypeRange()), std::move(captures)};
+}
+
 static AsyncFunctionType getDispatchFunctionType(scf::ParallelOp op,
                                                  PatternRewriter &rewriter) {
   // Values implicitly captured by the parallel operation.
@@ -90,12 +114,31 @@ static LuminousModuleOp createLuminousModule(ModuleOp module) {
 
 /// Finds the LuminousModuleOp in `op's parent module if it exists,
 /// otherwise creates a new LuminousModuleOp.
-static LuminousModuleOp getLuminousModule(scf::ParallelOp op) {
+static LuminousModuleOp getLuminousModule(Operation *op) {
   ModuleOp module = op->getParentOfType<ModuleOp>();
   if (module->hasAttr(LuminousDialect::getContainerModuleAttrName()))
     return findLuminousModule(module);
 
   return createLuminousModule(module);
+}
+
+static AsyncDispatchFunction
+createLuminousFunction(LaunchOp op, PatternRewriter &rewriter) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  ModuleOp module = op->getParentOfType<ModuleOp>();
+  ImplicitLocOpBuilder b(op.getLoc(), rewriter);
+
+  // Make sure that all constants will be inside the parallel operation body to
+  // reduce the number of parallel compute function arguments.
+  cloneConstantsIntoTheRegion(op.body(), rewriter);
+
+  auto luminousModule = getLuminousModule(op);
+  rewriter.setInsertionPointToStart(luminousModule.getBody());
+
+//  auto parallelFuncType = getDispatchFunctionType(op, rewriter);
+//  auto &type = parallelFuncType.type;
+//  auto luminousFunc =
+//      rewriter.create<LuminousFuncOp>(op.getLoc(), luminousAsyncFnSymbol, type);
 }
 
 static AsyncDispatchFunction
@@ -191,19 +234,52 @@ static void doSequantialDispatch(ImplicitLocOpBuilder &b,
 
 namespace {
 
+struct KernelOutliningRewritePattern : public OpRewritePattern<LaunchOp> {
+  using OpRewritePattern<LaunchOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(LaunchOp op,
+                                PatternRewriter &rewriter) const override;
+};
+
+struct LinalgDispatchRewritePattern : public OpRewritePattern<FuncOp> {
+  using OpRewritePattern<FuncOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(FuncOp op,
+                                PatternRewriter &rewriter) const override;
+};
+
+LogicalResult applyPatterns(FuncOp funcOp) {
+  MLIRContext *ctx = funcOp.getContext();
+  RewritePatternSet patterns(ctx);
+  patterns.add<KernelOutliningRewritePattern>(ctx)
+      .add<LinalgDispatchRewritePattern>(ctx);
+
+  return applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
+}
+
 /// A pass converting SCF operations to OpenMP operations.
 struct KernelOutliningPass
     : public LuminousKernelOutliningBase<KernelOutliningPass> {
   /// Pass entry point.
-  void runOnOperation() override {
+  void runOnFunction() override {
     if (failed(applyPatterns(getOperation())))
       signalPassFailure();
   }
 };
 
+LogicalResult KernelOutliningRewritePattern::matchAndRewrite(
+    LaunchOp op, PatternRewriter &rewriter) const {
+  auto luminousModule = getLuminousModule(op);
+  return success();
+}
+
+LogicalResult
+LinalgDispatchRewritePattern::matchAndRewrite(FuncOp op,
+                                              PatternRewriter &rewriter) const {
+  return success();
+}
+
+} // namespace
+
 std::unique_ptr<OperationPass<FuncOp>>
 mlir::createLuminousKernelOutliningPass() {
   return std::make_unique<KernelOutliningPass>();
-}
-
 }

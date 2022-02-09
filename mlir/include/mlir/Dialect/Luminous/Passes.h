@@ -26,5 +26,5 @@ std::unique_ptr<OperationPass<FuncOp>> createLuminousKernelOutliningPass();
 /// Generate the code for registering passes.
 #define GEN_PASS_REGISTRATION
 #include "mlir/Dialect/Luminous/Passes.h.inc"
-}
+} // namespace mlir
 #endif // MLIR_DIALECT_LUMINOUS_PASSES_H_

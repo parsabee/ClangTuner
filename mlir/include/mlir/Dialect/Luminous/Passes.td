@@ -11,7 +11,7 @@
 
 include "mlir/Pass/PassBase.td"
 
-def LuminousKernelOutlining : FunctionPass<"luminous-kernel-outline"> {
+def LuminousKernelOutlining : FunctionPass<"luminous-kernel-outlining"> {
   let summary = "Outlines luminous.func and luminous.module for luminous"
                 ".launch operations";
   let constructor = "mlir::createLuminousKernelOutliningPass()";
