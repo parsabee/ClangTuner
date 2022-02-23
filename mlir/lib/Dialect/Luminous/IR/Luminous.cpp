@@ -150,10 +150,7 @@ void LuminousFuncOp::build(OpBuilder &builder, OperationState &result,
                       builder.getStringAttr(name));
   result.addAttribute(getTypeAttrName(), TypeAttr::get(type));
   result.addAttributes(attrs);
-  Region *body = result.addRegion();
-  Block *entryBlock = new Block;
-  entryBlock->addArguments(type.getInputs());
-  body->getBlocks().push_back(entryBlock);
+  result.addRegion();
 }
 
 static ParseResult parseLuminousFuncOp(OpAsmParser &parser,

@@ -18,16 +18,11 @@
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Linalg/IR/LinalgOps.h"
 #include "mlir/Dialect/Luminous/IR/LuminousDialect.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/BlockAndValueMapping.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
-#include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-#include "mlir/Transforms/InliningUtils.h"
-#include "mlir/Transforms/RegionUtils.h"
 
 using namespace mlir;
 using namespace mlir::async;
@@ -46,7 +41,12 @@ struct LuminousDispatchParallelRewrite
 /// Applies the conversion patterns in the given function.
 static LogicalResult applyPatterns(ModuleOp module) {
   ConversionTarget target(*module.getContext());
-  target.addIllegalOp<scf::ParallelOp>();
+
+  // parallel ops that still have launch attribute and
+  // parallel loops inside launch ops are illegal
+  target.addDynamicallyLegalOp<scf::ParallelOp>([](Operation *op) {
+    return !op->hasAttr(launchAttrName) && !op->getParentOfType<LaunchOp>();
+  });
   target.addLegalDialect<LuminousDialect, LinalgDialect, AsyncDialect>();
   RewritePatternSet patterns(module.getContext());
   patterns.add<LuminousDispatchParallelRewrite>(module.getContext());
@@ -66,9 +66,14 @@ struct SCFToLuminousPass
 
 LogicalResult LuminousDispatchParallelRewrite::matchAndRewrite(
     scf::ParallelOp op, PatternRewriter &rewriter) const {
-  auto module = op->getParentOfType<ModuleOp>();
+
+  // Only perform this conversion on attributed parallel ops
+  if (!op->hasAttr(launchAttrName))
+    return failure();
+
   if (op.getNumReductions() != 0)
     return failure();
+
   auto launchOp =
       rewriter.replaceOpWithNewOp<LaunchOp>(op, op.upperBound(), op.step());
   {

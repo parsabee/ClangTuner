@@ -17,7 +17,19 @@
 
 namespace mlir {
 
-std::unique_ptr<OperationPass<FuncOp>> createLuminousKernelOutliningPass();
+namespace luminous {
+
+class DispatchableBlock;
+using DispatchBuilderFn =
+    std::function<void(LaunchOp, std::vector<DispatchableBlock> &)>;
+void defaultDispatchBuilderFn(
+    LaunchOp launchOp, std::vector<DispatchableBlock> &dispatchableBlocks);
+
+} // namespace luminous
+
+std::unique_ptr<OperationPass<FuncOp>>
+createLuminousKernelOutliningPass(mlir::luminous::DispatchBuilderFn fn =
+                                      mlir::luminous::defaultDispatchBuilderFn);
 
 //===----------------------------------------------------------------------===//
 // Registration

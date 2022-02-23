@@ -36,59 +36,139 @@ using namespace mlir::luminous;
 using namespace mlir::linalg;
 
 static constexpr char luminousModuleSymbol[] = "device_module";
-static constexpr char luminousAsyncFnSymbol[] = "async_fn";
+static constexpr char kernelOutliningVisited[] = "kerenels_outlined";
 
-struct AsyncFunctionType {
-  FunctionType type;
-  llvm::SmallVector<Value> captures;
-};
-
-struct AsyncDispatchFunction {
-  LuminousFuncOp func;
-  llvm::SmallVector<Value> captures;
-};
-
-static SmallVector<Value, 4> getCaptures(scf::ParallelOp op) {
-  llvm::SetVector<Value> capturesSet;
-  getUsedValuesDefinedAbove(op.region(), op.region(), capturesSet);
-  return llvm::to_vector<4>(capturesSet);
+static const std::string getNextFunctionName() {
+  static constexpr char luminousAsyncFnSymbol[] = "async_fn";
+  static unsigned fnId = 0;
+  return luminousAsyncFnSymbol + std::to_string(fnId++);
 }
 
-static AsyncFunctionType getLuminousFunctionType(ArrayRef<Operation *> ops,
-                                                 PatternRewriter &rewriter) {
-  // Values implicitly captured by the parallel operation.
-  BlockAndValueMapping mapping;
-  SmallVector<Type, 6> params;
-  SmallVector<Value, 6> args;
-  for (auto *op: ops) {
-    for (auto operand: op->getOperands()) {
-      params.push_back(operand.getType());
+namespace mlir {
+namespace luminous {
+
+/// This class handles extracting and rewriting dispatchable regions within
+/// LaunchOps.
+/// I) Initial state: A basic block is constructed. At this point operations
+/// from the target LaunchOp can be inserted to the block.
+/// II) FunctionCreated state: After the basic block is filled with specified
+/// operations, a luminous function is created that will wrap the basic block.
+/// III) DispatchCreated state: The operations in the launch op corresponding
+/// to the newly created luminous function are replaced with a luminous
+/// dispatch call.
+class DispatchableBlock {
+  friend void rewriteDispatchBlock(PatternRewriter &, Location,
+                                   DispatchableBlock &, LuminousModuleOp);
+  OpBuilder builder;
+  LaunchOp launchOp;
+  std::unique_ptr<Block> block;
+  SmallVector<Value> args;
+  SmallVector<Operation *> ops;
+  SetVector<Value> opResults;
+  BlockAndValueMapping cloningMap;
+  enum class State { Initial, FunctionCreated, DispatchCreated };
+  State state = State::Initial;
+
+public:
+  DispatchableBlock(LaunchOp op)
+      : builder(op.getContext()), launchOp(op), block(new Block) {}
+  DispatchableBlock(DispatchableBlock &&other) = default;
+  DispatchableBlock &operator=(DispatchableBlock &&other) = default;
+  DispatchableBlock(const DispatchableBlock &) = delete;
+  DispatchableBlock &operator=(const DispatchableBlock &other) = delete;
+
+  /// Clones `op' and inserts it in the basic block; it keeps track of
+  /// the op for performing replacement with dispatch call.
+  void push_back(Operation *op) {
+    assert(state == State::Initial);
+    assert(op->getParentOp() == launchOp && "can only push back operations "
+                                            "within launch op");
+    // handling operands
+    for (auto operand : op->getOperands()) {
+      // if the operands of the current op have been visited before then
+      // continue, otherwise they are arguments to this block.
+      if (opResults.contains(operand))
+        continue;
+
       args.push_back(operand);
-      mapping.map(operand, args.back());
+      auto blockArg = block->addArgument(operand.getType());
+      cloningMap.map(operand, blockArg);
     }
+
+    // keeping track of ops results
+    for (auto result : op->getOpResults()) {
+      assert(!opResults.contains(result));
+      opResults.insert(result);
+    }
+
+    // keeping track of op
+    ops.push_back(op);
+    auto *clone = builder.clone(*op, cloningMap);
+    block->push_back(clone);
   }
 
-//  llvm::SetVector<Value> capturesSet;
-//  auto loopBodyArgs = op.body().getArguments();
-//  capturesSet.insert(loopBodyArgs.begin(), loopBodyArgs.end());
-//  getUsedValuesDefinedAbove(op.getRegion(), op.getRegion(), capturesSet);
-//  auto captures = llvm::to_vector<6>(capturesSet);
-//  auto inputs = llvm::to_vector<6>(
-//      llvm::map_range(captures, [](Value &val) { return val.getType(); }));
-//  return {rewriter.getFunctionType(inputs, TypeRange()), std::move(captures)};
-}
+private:
+  void updateState(State s) { state = s; }
 
-static AsyncFunctionType getDispatchFunctionType(scf::ParallelOp op,
-                                                 PatternRewriter &rewriter) {
-  // Values implicitly captured by the parallel operation.
-  llvm::SetVector<Value> capturesSet;
-  auto loopBodyArgs = op.getLoopBody().getArguments();
-  capturesSet.insert(loopBodyArgs.begin(), loopBodyArgs.end());
-  getUsedValuesDefinedAbove(op.region(), op.region(), capturesSet);
-  auto captures = llvm::to_vector<6>(capturesSet);
-  auto inputs = llvm::to_vector<6>(
-      llvm::map_range(captures, [](Value &val) { return val.getType(); }));
-  return {rewriter.getFunctionType(inputs, TypeRange()), std::move(captures)};
+  /// Outlines the luminous function
+  LuminousFuncOp createLuminousFunction(PatternRewriter &rewriter, Location loc,
+                                        LuminousModuleOp luminousModule) {
+    assert(state == State::Initial);
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(luminousModule.getBody()->getTerminator());
+
+    // return type is void and arguments are the basic blocks arguments
+    auto funcType =
+        rewriter.getFunctionType(block->getArgumentTypes(), TypeRange());
+
+    auto func =
+        rewriter.create<LuminousFuncOp>(loc, getNextFunctionName(), funcType);
+
+    rewriter.setInsertionPoint(block.get(), block->end());
+    rewriter.create<luminous::ReturnOp>(loc);
+
+    // transferring ownership of the block to the funcs region
+    func.body().push_front(block.release());
+
+    updateState(State::FunctionCreated);
+    return func;
+  }
+
+  /// Replaces the ops in the target launch op with dispatch calls to the
+  /// outlined luminous functions
+  void replaceOpsWithDispatchCall(PatternRewriter &rewriter,
+                                  LuminousFuncOp func) {
+    assert(state == State::FunctionCreated && !ops.empty());
+    OpBuilder::InsertionGuard guard(rewriter);
+
+    // Insert dispatch call after the last op in the dispatchable region
+    auto *lastOp = ops.back();
+    rewriter.setInsertionPoint(lastOp);
+    auto dispatchOp = rewriter.create<DispatchOp>(lastOp->getLoc(), func,
+                                                  ValueRange(), args);
+
+    // wait call on the async result of dispatch op
+    rewriter.create<AwaitOp>(lastOp->getLoc(), dispatchOp);
+
+    // removing the dispatchable regions ops from the launch ops body
+    for (auto *op : ops)
+      rewriter.eraseOp(op);
+
+    updateState(State::DispatchCreated);
+  }
+};
+
+void defaultDispatchBuilderFn(
+    LaunchOp launchOp, std::vector<DispatchableBlock> &dispatchableBlocks) {
+  auto &body = launchOp.body().back();
+  for (auto &op : body) {
+    if (!op.hasAttr(luminous::maxMemoryAttrName))
+      continue;
+
+    DispatchableBlock block(launchOp);
+    block.push_back(&op);
+    dispatchableBlocks.push_back(std::move(block));
+  }
 }
 
 static LuminousModuleOp findLuminousModule(ModuleOp module) {
@@ -97,189 +177,94 @@ static LuminousModuleOp findLuminousModule(ModuleOp module) {
   return cast<LuminousModuleOp>(op);
 }
 
-static LuminousModuleOp createLuminousModule(ModuleOp module) {
+static LuminousModuleOp createLuminousModule(PatternRewriter &rewriter,
+                                             Location loc, ModuleOp module) {
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(module.getBody(), module.getBody()->begin());
   MLIRContext *ctx = module.getContext();
-  ImplicitLocOpBuilder b(module.getLoc(), OpBuilder{ctx});
-  auto luminousModule = b.create<LuminousModuleOp>(luminousModuleSymbol);
+  auto luminousModule =
+      rewriter.create<LuminousModuleOp>(loc, luminousModuleSymbol);
   module->setAttr(LuminousDialect::getContainerModuleAttrName(),
                   UnitAttr::get(ctx));
-
-  // Insert luminous module into the module symbol table and assign it unique
-  // name.
-  SymbolTable symbolTable(module);
-  symbolTable.insert(luminousModule);
-
   return luminousModule;
 }
 
 /// Finds the LuminousModuleOp in `op's parent module if it exists,
 /// otherwise creates a new LuminousModuleOp.
-static LuminousModuleOp getLuminousModule(Operation *op) {
+static LuminousModuleOp getLuminousModule(Operation *op, Location loc,
+                                          PatternRewriter &rewriter) {
   ModuleOp module = op->getParentOfType<ModuleOp>();
   if (module->hasAttr(LuminousDialect::getContainerModuleAttrName()))
     return findLuminousModule(module);
 
-  return createLuminousModule(module);
+  return createLuminousModule(rewriter, loc, module);
 }
 
-static AsyncDispatchFunction
-createLuminousFunction(LaunchOp op, PatternRewriter &rewriter) {
-  OpBuilder::InsertionGuard guard(rewriter);
-  ModuleOp module = op->getParentOfType<ModuleOp>();
-  ImplicitLocOpBuilder b(op.getLoc(), rewriter);
-
-  // Make sure that all constants will be inside the parallel operation body to
-  // reduce the number of parallel compute function arguments.
-  cloneConstantsIntoTheRegion(op.body(), rewriter);
-
-  auto luminousModule = getLuminousModule(op);
-  rewriter.setInsertionPointToStart(luminousModule.getBody());
-
-//  auto parallelFuncType = getDispatchFunctionType(op, rewriter);
-//  auto &type = parallelFuncType.type;
-//  auto luminousFunc =
-//      rewriter.create<LuminousFuncOp>(op.getLoc(), luminousAsyncFnSymbol, type);
+void rewriteDispatchBlock(PatternRewriter &rewriter, Location loc,
+                          DispatchableBlock &dispatchableBlock,
+                          LuminousModuleOp moduleOp) {
+  auto fn = dispatchableBlock.createLuminousFunction(rewriter, loc, moduleOp);
+  dispatchableBlock.replaceOpsWithDispatchCall(rewriter, fn);
 }
 
-static AsyncDispatchFunction
-getAsyncDispatchFunction(scf::ParallelOp op, PatternRewriter &rewriter) {
-
-  OpBuilder::InsertionGuard guard(rewriter);
-  ModuleOp module = op->getParentOfType<ModuleOp>();
-  ImplicitLocOpBuilder b(op.getLoc(), rewriter);
-
-  // Make sure that all constants will be inside the parallel operation body to
-  // reduce the number of parallel compute function arguments.
-  cloneConstantsIntoTheRegion(op.getLoopBody(), rewriter);
-
-  auto luminousModule = getLuminousModule(op);
-  rewriter.setInsertionPointToStart(luminousModule.getBody());
-
-  auto parallelFuncType = getDispatchFunctionType(op, rewriter);
-  auto &type = parallelFuncType.type;
-  auto luminousFunc =
-      rewriter.create<LuminousFuncOp>(op.getLoc(), luminousAsyncFnSymbol, type);
-
-  // Create function entry block.
-  //  Block *block = b.createBlock(&luminousFunc.getBody(),
-  //  luminousFunc.begin(),
-  //                               type.getInputs());
-
-  //  block.addArguments(type.getInputs());
-  //  b.setInsertionPointToStart(&block);
-  llvm::SetVector<Value> capturesSet;
-  getUsedValuesDefinedAbove(op.region(), op.region(), capturesSet);
-  rewriter.inlineRegionBefore(op.getLoopBody(), luminousFunc.getBody(),
-                              luminousFunc.getBody().end());
-  Block *block = &luminousFunc.body().back();
-  b.setInsertionPointToEnd(block);
-  //  block->addArguments()
-  // Copy the body of the parallel op into the inner-most loop.
-  //  BlockAndValueMapping mapping;
-  //  for (auto &operation : op.getLoopBody().getOps())
-  //    if (!isa<scf::YieldOp>(operation)) {
-  //      auto *clone = b.clone(operation, mapping);
-  //      mapping.map(op.getResults(), clone->getResults());
-  //      mapping.map(op.getOperands(), clone->getOperands());
-  //    }
-  //  b.setInsertionPointToEnd(block);
-  b.create<luminous::ReturnOp>();
-  block->dump();
-  luminousModule.dump();
-  return {luminousFunc, std::move(parallelFuncType.captures)};
-}
-
-// Dispatch parallel compute functions by submitting all async compute tasks
-// from a simple for loop in the caller thread.
-static void doSequantialDispatch(ImplicitLocOpBuilder &b,
-                                 PatternRewriter &rewriter,
-                                 AsyncDispatchFunction &asyncFunction,
-                                 scf::ParallelOp op, Value blockSize,
-                                 Value blockCount,
-                                 const SmallVector<Value> &tripCounts) {
-  MLIRContext *ctx = op->getContext();
-
-  auto &func = asyncFunction.func;
-
-  Value c0 = b.create<ConstantIndexOp>(0);
-  Value c1 = b.create<ConstantIndexOp>(1);
-
-  // Create an async.group to wait on all async tokens from the concurrent
-  // execution of multiple parallel compute function. First block will be
-  // executed synchronously in the caller thread.
-  Value groupSize = b.create<SubIOp>(blockCount, c1);
-  Value group = b.create<CreateGroupOp>(GroupType::get(ctx), groupSize);
-
-  // Call parallel compute function for all blocks.
-  using LoopBodyBuilder =
-      std::function<void(OpBuilder &, Location, Value, ValueRange)>;
-
-  // Induction variable is the index of the block: [0, blockCount).
-  LoopBodyBuilder loopBuilder = [&](OpBuilder &loopBuilder, Location loc,
-                                    Value iv, ValueRange args) {
-    ImplicitLocOpBuilder nb(loc, loopBuilder);
-    auto dispatch =
-        nb.create<DispatchOp>(func, ValueRange(), asyncFunction.captures);
-    nb.create<AddToGroupOp>(rewriter.getIndexType(), dispatch.asyncToken(),
-                            group);
-    nb.create<scf::YieldOp>();
-  };
-
-  // Iterate over all compute blocks and launch parallel compute operations.
-  b.create<scf::ForOp>(c0, blockCount, c1, ValueRange(), loopBuilder);
-
-  // Wait for the completion of all async compute operations.
-  b.create<AwaitAllOp>(group);
-}
+} // namespace luminous
+} // namespace mlir
 
 namespace {
 
 struct KernelOutliningRewritePattern : public OpRewritePattern<LaunchOp> {
-  using OpRewritePattern<LaunchOp>::OpRewritePattern;
+  DispatchBuilderFn dispatchBuilderFn;
+  KernelOutliningRewritePattern(MLIRContext *ctx, DispatchBuilderFn fn)
+      : OpRewritePattern<LaunchOp>(ctx), dispatchBuilderFn(fn) {}
   LogicalResult matchAndRewrite(LaunchOp op,
                                 PatternRewriter &rewriter) const override;
 };
 
-struct LinalgDispatchRewritePattern : public OpRewritePattern<FuncOp> {
-  using OpRewritePattern<FuncOp>::OpRewritePattern;
-  LogicalResult matchAndRewrite(FuncOp op,
-                                PatternRewriter &rewriter) const override;
-};
-
-LogicalResult applyPatterns(FuncOp funcOp) {
+LogicalResult applyPatterns(FuncOp funcOp, DispatchBuilderFn fn) {
   MLIRContext *ctx = funcOp.getContext();
   RewritePatternSet patterns(ctx);
-  patterns.add<KernelOutliningRewritePattern>(ctx)
-      .add<LinalgDispatchRewritePattern>(ctx);
-
+  patterns.add<KernelOutliningRewritePattern>(ctx, fn);
   return applyPatternsAndFoldGreedily(funcOp, std::move(patterns));
 }
 
 /// A pass converting SCF operations to OpenMP operations.
 struct KernelOutliningPass
     : public LuminousKernelOutliningBase<KernelOutliningPass> {
+  DispatchBuilderFn dispatchBuilderFn;
+
+  KernelOutliningPass(DispatchBuilderFn fn) : dispatchBuilderFn(fn) {}
   /// Pass entry point.
   void runOnFunction() override {
-    if (failed(applyPatterns(getOperation())))
+    if (failed(applyPatterns(getOperation(), dispatchBuilderFn)))
       signalPassFailure();
   }
 };
 
 LogicalResult KernelOutliningRewritePattern::matchAndRewrite(
     LaunchOp op, PatternRewriter &rewriter) const {
-  auto luminousModule = getLuminousModule(op);
-  return success();
-}
 
-LogicalResult
-LinalgDispatchRewritePattern::matchAndRewrite(FuncOp op,
-                                              PatternRewriter &rewriter) const {
+  // stop if already visited
+  if (op->hasAttr(kernelOutliningVisited))
+    return failure();
+
+  auto loc = op.getLoc();
+  auto luminousModule = getLuminousModule(op, loc, rewriter);
+  op->setAttr(kernelOutliningVisited, rewriter.getUnitAttr());
+  std::vector<DispatchableBlock> dispatchableBlocks;
+  dispatchBuilderFn(op, dispatchableBlocks);
+  std::reverse(dispatchableBlocks.begin(), dispatchableBlocks.end());
+  while (!dispatchableBlocks.empty()) {
+    auto &b = dispatchableBlocks.back();
+    rewriteDispatchBlock(rewriter, loc, b, luminousModule);
+    dispatchableBlocks.pop_back();
+  }
+
   return success();
 }
 
 } // namespace
 
 std::unique_ptr<OperationPass<FuncOp>>
-mlir::createLuminousKernelOutliningPass() {
-  return std::make_unique<KernelOutliningPass>();
+mlir::createLuminousKernelOutliningPass(DispatchBuilderFn fn) {
+  return std::make_unique<KernelOutliningPass>(fn);
 }
