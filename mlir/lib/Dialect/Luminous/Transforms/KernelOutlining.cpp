@@ -57,8 +57,11 @@ namespace luminous {
 /// to the newly created luminous function are replaced with a luminous
 /// dispatch call.
 class DispatchableBlock {
-  friend void rewriteDispatchBlock(PatternRewriter &, Location,
-                                   DispatchableBlock &, LuminousModuleOp);
+  friend class DispatchableBlocks;
+  friend void outlineKernels(PatternRewriter &rewriter, Location loc,
+                             LuminousModuleOp luminousModule,
+                             DispatchableBlocks &&dispatchBlocks);
+
   OpBuilder builder;
   LaunchOp launchOp;
   std::unique_ptr<Block> block;
@@ -66,21 +69,21 @@ class DispatchableBlock {
   SmallVector<Operation *> ops;
   SetVector<Value> opResults;
   BlockAndValueMapping cloningMap;
-  enum class State { Initial, FunctionCreated, DispatchCreated };
-  State state = State::Initial;
 
-public:
   DispatchableBlock(LaunchOp op)
       : builder(op.getContext()), launchOp(op), block(new Block) {}
   DispatchableBlock(DispatchableBlock &&other) = default;
   DispatchableBlock &operator=(DispatchableBlock &&other) = default;
+
+  Block *releaseBlock() { return block.release(); }
+
+public:
   DispatchableBlock(const DispatchableBlock &) = delete;
   DispatchableBlock &operator=(const DispatchableBlock &other) = delete;
 
   /// Clones `op' and inserts it in the basic block; it keeps track of
   /// the op for performing replacement with dispatch call.
   void push_back(Operation *op) {
-    assert(state == State::Initial);
     assert(op->getParentOp() == launchOp && "can only push back operations "
                                             "within launch op");
     // handling operands
@@ -95,85 +98,113 @@ public:
       cloningMap.map(operand, blockArg);
     }
 
-    // keeping track of ops results
+    // keeping track of ops results to determine whether the value is an
+    // argument to the block or has been produced in the block
     for (auto result : op->getOpResults()) {
       assert(!opResults.contains(result));
       opResults.insert(result);
     }
 
-    // keeping track of op
+    // keeping track of ops to later replace them with a dispatch call
     ops.push_back(op);
     auto *clone = builder.clone(*op, cloningMap);
     block->push_back(clone);
   }
+};
 
-private:
-  void updateState(State s) { state = s; }
+/// Encapsulates the dispatchable blocks and provides an interface to add new
+/// dispatchable blocks
+class DispatchableBlocks {
+  friend void outlineKernels(PatternRewriter &rewriter, Location loc,
+                             LuminousModuleOp luminousModule,
+                             DispatchableBlocks &&dispatchBlocks);
+  LaunchOp launchOp;
 
-  /// Outlines the luminous function
-  LuminousFuncOp createLuminousFunction(PatternRewriter &rewriter, Location loc,
-                                        LuminousModuleOp luminousModule) {
-    assert(state == State::Initial);
-    OpBuilder::InsertionGuard guard(rewriter);
-    rewriter.setInsertionPoint(luminousModule.getBody()->getTerminator());
+  using Blocks = SmallVector<std::unique_ptr<DispatchableBlock>>;
+  Blocks blocks;
 
-    // return type is void and arguments are the basic blocks arguments
-    auto funcType =
-        rewriter.getFunctionType(block->getArgumentTypes(), TypeRange());
+  Blocks &getBlocks() { return blocks; }
 
-    auto func =
-        rewriter.create<LuminousFuncOp>(loc, getNextFunctionName(), funcType);
-
-    rewriter.setInsertionPoint(block.get(), block->end());
-    rewriter.create<luminous::ReturnOp>(loc);
-
-    // transferring ownership of the block to the funcs region
-    func.body().push_front(block.release());
-
-    updateState(State::FunctionCreated);
-    return func;
-  }
-
-  /// Replaces the ops in the target launch op with dispatch calls to the
-  /// outlined luminous functions
-  void replaceOpsWithDispatchCall(PatternRewriter &rewriter,
-                                  LuminousFuncOp func) {
-    assert(state == State::FunctionCreated && !ops.empty());
-    OpBuilder::InsertionGuard guard(rewriter);
-
-    // Insert dispatch call after the last op in the dispatchable region
-    auto *lastOp = ops.back();
-    rewriter.setInsertionPoint(lastOp);
-    auto dispatchOp = rewriter.create<DispatchOp>(lastOp->getLoc(), func,
-                                                  ValueRange(), args);
-
-    // wait call on the async result of dispatch op
-    rewriter.create<AwaitOp>(lastOp->getLoc(), dispatchOp);
-
-    // removing the dispatchable regions ops from the launch ops body
-    for (auto *op : ops)
-      rewriter.eraseOp(op);
-
-    updateState(State::DispatchCreated);
+public:
+  DispatchableBlocks(LaunchOp op) : launchOp(op) {}
+  DispatchableBlock &addNewBlock() {
+    blocks.emplace_back(new DispatchableBlock(launchOp));
+    return *blocks.back();
   }
 };
 
-void defaultDispatchBuilderFn(
-    LaunchOp launchOp, std::vector<DispatchableBlock> &dispatchableBlocks) {
-  auto &body = launchOp.body().back();
-  for (auto &op : body) {
-    if (!op.hasAttr(luminous::maxMemoryAttrName))
-      continue;
+/// Outlines the luminous function
+static LuminousFuncOp outline(PatternRewriter &rewriter, Location loc,
+                              LuminousModuleOp luminousModule, Block *block) {
 
-    DispatchableBlock block(launchOp);
-    block.push_back(&op);
-    dispatchableBlocks.push_back(std::move(block));
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPoint(luminousModule.getBody()->getTerminator());
+
+  // return type is void and arguments are the basic blocks arguments
+  auto funcType =
+      rewriter.getFunctionType(block->getArgumentTypes(), TypeRange());
+
+  auto func =
+      rewriter.create<LuminousFuncOp>(loc, getNextFunctionName(), funcType);
+
+  rewriter.setInsertionPoint(block, block->end());
+  rewriter.create<luminous::ReturnOp>(loc);
+
+  // transferring ownership of the block to the funcs region
+  func.body().push_front(block);
+
+  return func;
+}
+
+/// Replaces the ops in the target launch op with dispatch calls to the
+/// outlined luminous functions
+static Value replaceOpsWithDispatchCall(PatternRewriter &rewriter,
+                                        LuminousFuncOp func,
+                                        ValueRange dependencies,
+                                        SmallVector<Operation *> &ops,
+                                        SmallVector<Value> &args) {
+  OpBuilder::InsertionGuard guard(rewriter);
+
+  // Insert dispatch call after the last op in the dispatchable region
+  auto *lastOp = ops.back();
+  rewriter.setInsertionPoint(lastOp);
+  auto dispatchOp =
+      rewriter.create<DispatchOp>(lastOp->getLoc(), func, dependencies, args);
+
+  // removing the dispatchable regions ops from the launch ops body
+  for (auto *op : ops)
+    rewriter.eraseOp(op);
+
+  return dispatchOp;
+}
+
+/// Outlines kernels for each dispatchable blocks
+/// this function consumes and destroys dispatchBlocks
+void outlineKernels(PatternRewriter &rewriter, Location loc,
+                    LuminousModuleOp luminousModule,
+                    DispatchableBlocks &&dispatchBlocks) {
+  auto &blocks = dispatchBlocks.getBlocks();
+  Value dispOpToken = nullptr;
+  for (auto &block : blocks) {
+    auto fn = outline(rewriter, loc, luminousModule, block->releaseBlock());
+    if (dispOpToken)
+      dispOpToken = replaceOpsWithDispatchCall(rewriter, fn, {dispOpToken},
+                                             block->ops, block->args);
+    else
+      dispOpToken = replaceOpsWithDispatchCall(rewriter, fn, {},
+                                               block->ops, block->args);
+  }
+
+  if (dispOpToken) {
+    ImplicitLocOpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointAfterValue(dispOpToken);
+    rewriter.create<AwaitOp>(loc, dispOpToken);
   }
 }
 
 static LuminousModuleOp findLuminousModule(ModuleOp module) {
   auto *op = module.lookupSymbol(luminousModuleSymbol);
-  assert(op && "couldn't find luminous module");
+  assert(op && isa<LuminousModuleOp>(op) && "couldn't find luminous module");
   return cast<LuminousModuleOp>(op);
 }
 
@@ -200,11 +231,17 @@ static LuminousModuleOp getLuminousModule(Operation *op, Location loc,
   return createLuminousModule(rewriter, loc, module);
 }
 
-void rewriteDispatchBlock(PatternRewriter &rewriter, Location loc,
-                          DispatchableBlock &dispatchableBlock,
-                          LuminousModuleOp moduleOp) {
-  auto fn = dispatchableBlock.createLuminousFunction(rewriter, loc, moduleOp);
-  dispatchableBlock.replaceOpsWithDispatchCall(rewriter, fn);
+void defaultDispatchBuilderFn(LaunchOp launchOp,
+                              DispatchableBlocks &dispatchableBlocks) {
+  auto &body = launchOp.body().back();
+  for (auto &op : body) {
+    if (!op.hasAttr(luminous::maxMemoryAttrName))
+      continue;
+
+    // add a new block to the dispatchable blocks and fill it with ops
+    auto &block = dispatchableBlocks.addNewBlock();
+    block.push_back(&op);
+  }
 }
 
 } // namespace luminous
@@ -250,14 +287,9 @@ LogicalResult KernelOutliningRewritePattern::matchAndRewrite(
   auto loc = op.getLoc();
   auto luminousModule = getLuminousModule(op, loc, rewriter);
   op->setAttr(kernelOutliningVisited, rewriter.getUnitAttr());
-  std::vector<DispatchableBlock> dispatchableBlocks;
+  DispatchableBlocks dispatchableBlocks(op);
   dispatchBuilderFn(op, dispatchableBlocks);
-  std::reverse(dispatchableBlocks.begin(), dispatchableBlocks.end());
-  while (!dispatchableBlocks.empty()) {
-    auto &b = dispatchableBlocks.back();
-    rewriteDispatchBlock(rewriter, loc, b, luminousModule);
-    dispatchableBlocks.pop_back();
-  }
+  outlineKernels(rewriter, loc, luminousModule, std::move(dispatchableBlocks));
 
   return success();
 }

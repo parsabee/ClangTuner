@@ -19,11 +19,10 @@ namespace mlir {
 
 namespace luminous {
 
+class DispatchableBlocks;
 class DispatchableBlock;
-using DispatchBuilderFn =
-    std::function<void(LaunchOp, std::vector<DispatchableBlock> &)>;
-void defaultDispatchBuilderFn(
-    LaunchOp launchOp, std::vector<DispatchableBlock> &dispatchableBlocks);
+using DispatchBuilderFn = std::function<void(LaunchOp, DispatchableBlocks &)>;
+void defaultDispatchBuilderFn(LaunchOp, DispatchableBlocks &);
 
 } // namespace luminous
 
