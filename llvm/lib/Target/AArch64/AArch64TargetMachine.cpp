@@ -22,9 +22,11 @@
 #include "llvm/ADT/Triple.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/CodeGen/CSEConfigBase.h"
+#include "llvm/CodeGen/GlobalISel/CSEInfo.h"
 #include "llvm/CodeGen/GlobalISel/IRTranslator.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelect.h"
 #include "llvm/CodeGen/GlobalISel/Legalizer.h"
+#include "llvm/CodeGen/GlobalISel/LoadStoreOpt.h"
 #include "llvm/CodeGen/GlobalISel/Localizer.h"
 #include "llvm/CodeGen/GlobalISel/RegBankSelect.h"
 #include "llvm/CodeGen/MIRParser/MIParser.h"
@@ -36,10 +38,10 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCTargetOptions.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Support/CommandLine.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
 #include "llvm/Target/TargetOptions.h"
 #include "llvm/Transforms/CFGuard.h"
@@ -116,11 +118,6 @@ static cl::opt<bool>
                   cl::init(true), cl::Hidden);
 
 static cl::opt<bool>
-EnableA53Fix835769("aarch64-fix-cortex-a53-835769", cl::Hidden,
-                cl::desc("Work around Cortex-A53 erratum 835769"),
-                cl::init(false));
-
-static cl::opt<bool>
     EnableGEPOpt("aarch64-enable-gep-opt", cl::Hidden,
                  cl::desc("Enable optimizations on complex GEPs"),
                  cl::init(false));
@@ -174,6 +171,16 @@ static cl::opt<unsigned> SVEVectorBitsMinOpt(
     cl::init(0), cl::Hidden);
 
 extern cl::opt<bool> EnableHomogeneousPrologEpilog;
+
+static cl::opt<bool> EnableGISelLoadStoreOptPreLegal(
+    "aarch64-enable-gisel-ldst-prelegal",
+    cl::desc("Enable GlobalISel's pre-legalizer load/store optimization pass"),
+    cl::init(true), cl::Hidden);
+
+static cl::opt<bool> EnableGISelLoadStoreOptPostLegal(
+    "aarch64-enable-gisel-ldst-postlegal",
+    cl::desc("Enable GlobalISel's post-legalizer load/store optimization pass"),
+    cl::init(false), cl::Hidden);
 
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAArch64Target() {
   // Register the target.
@@ -355,10 +362,13 @@ AArch64TargetMachine::~AArch64TargetMachine() = default;
 const AArch64Subtarget *
 AArch64TargetMachine::getSubtargetImpl(const Function &F) const {
   Attribute CPUAttr = F.getFnAttribute("target-cpu");
+  Attribute TuneAttr = F.getFnAttribute("tune-cpu");
   Attribute FSAttr = F.getFnAttribute("target-features");
 
   std::string CPU =
       CPUAttr.isValid() ? CPUAttr.getValueAsString().str() : TargetCPU;
+  std::string TuneCPU =
+      TuneAttr.isValid() ? TuneAttr.getValueAsString().str() : CPU;
   std::string FS =
       FSAttr.isValid() ? FSAttr.getValueAsString().str() : TargetFS;
 
@@ -368,10 +378,9 @@ AArch64TargetMachine::getSubtargetImpl(const Function &F) const {
   unsigned MaxSVEVectorSize = 0;
   Attribute VScaleRangeAttr = F.getFnAttribute(Attribute::VScaleRange);
   if (VScaleRangeAttr.isValid()) {
-    std::tie(MinSVEVectorSize, MaxSVEVectorSize) =
-        VScaleRangeAttr.getVScaleRangeArgs();
-    MinSVEVectorSize *= 128;
-    MaxSVEVectorSize *= 128;
+    Optional<unsigned> VScaleMax = VScaleRangeAttr.getVScaleRangeMax();
+    MinSVEVectorSize = VScaleRangeAttr.getVScaleRangeMin() * 128;
+    MaxSVEVectorSize = VScaleMax ? VScaleMax.getValue() * 128 : 0;
   } else {
     MinSVEVectorSize = SVEVectorBitsMinOpt;
     MaxSVEVectorSize = SVEVectorBitsMaxOpt;
@@ -399,6 +408,7 @@ AArch64TargetMachine::getSubtargetImpl(const Function &F) const {
   Key += "SVEMax";
   Key += std::to_string(MaxSVEVectorSize);
   Key += CPU;
+  Key += TuneCPU;
   Key += FS;
 
   auto &I = SubtargetMap[Key];
@@ -407,8 +417,8 @@ AArch64TargetMachine::getSubtargetImpl(const Function &F) const {
     // creation will depend on the TM and the code generation flags on the
     // function that reside in TargetOptions.
     resetTargetOptions(F);
-    I = std::make_unique<AArch64Subtarget>(TargetTriple, CPU, FS, *this,
-                                           isLittle, MinSVEVectorSize,
+    I = std::make_unique<AArch64Subtarget>(TargetTriple, CPU, TuneCPU, FS,
+                                           *this, isLittle, MinSVEVectorSize,
                                            MaxSVEVectorSize);
   }
   return I.get();
@@ -495,7 +505,7 @@ public:
 } // end anonymous namespace
 
 TargetTransformInfo
-AArch64TargetMachine::getTargetTransformInfo(const Function &F) {
+AArch64TargetMachine::getTargetTransformInfo(const Function &F) const {
   return TargetTransformInfo(AArch64TTIImpl(this, F));
 }
 
@@ -522,6 +532,7 @@ void AArch64PassConfig::addIRPasses() {
   if (TM->getOptLevel() != CodeGenOpt::None && EnableAtomicTidy)
     addPass(createCFGSimplificationPass(SimplifyCFGOptions()
                                             .forwardSwitchCondToPhi(true)
+                                            .convertSwitchRangeToICmp(true)
                                             .convertSwitchToLookupTable(true)
                                             .needCanonicalLoops(false)
                                             .hoistCommonInsts(true)
@@ -565,6 +576,9 @@ void AArch64PassConfig::addIRPasses() {
   // Add Control Flow Guard checks.
   if (TM->getTargetTriple().isOSWindows())
     addPass(createCFGuardCheckPass());
+
+  if (TM->Options.JMCInstrument)
+    addPass(createJMCInstrumenterPass());
 }
 
 // Pass Pipeline Configuration
@@ -626,8 +640,11 @@ bool AArch64PassConfig::addIRTranslator() {
 void AArch64PassConfig::addPreLegalizeMachineIR() {
   if (getOptLevel() == CodeGenOpt::None)
     addPass(createAArch64O0PreLegalizerCombiner());
-  else
+  else {
     addPass(createAArch64PreLegalizerCombiner());
+    if (EnableGISelLoadStoreOptPreLegal)
+      addPass(new LoadStoreOpt());
+  }
 }
 
 bool AArch64PassConfig::addLegalizeMachineIR() {
@@ -637,8 +654,11 @@ bool AArch64PassConfig::addLegalizeMachineIR() {
 
 void AArch64PassConfig::addPreRegBankSelect() {
   bool IsOptNone = getOptLevel() == CodeGenOpt::None;
-  if (!IsOptNone)
+  if (!IsOptNone) {
     addPass(createAArch64PostLegalizerCombiner(IsOptNone));
+    if (EnableGISelLoadStoreOptPostLegal)
+      addPass(new LoadStoreOpt());
+  }
   addPass(createAArch64PostLegalizerLowering());
 }
 
@@ -744,8 +764,7 @@ void AArch64PassConfig::addPreEmitPass() {
   if (TM->getOptLevel() >= CodeGenOpt::Aggressive && EnableLoadStoreOpt)
     addPass(createAArch64LoadStoreOptimizationPass());
 
-  if (EnableA53Fix835769)
-    addPass(createAArch64A53Fix835769());
+  addPass(createAArch64A53Fix835769());
 
   if (EnableBranchTargets)
     addPass(createAArch64BranchTargetsPass());

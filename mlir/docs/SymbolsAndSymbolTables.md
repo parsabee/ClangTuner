@@ -2,11 +2,11 @@
 
 [TOC]
 
-With [Regions](LangRef.md/#regions), the multi-level aspect of MLIR is structural
-in the IR. A lot of infrastructure within the compiler is built around this
-nesting structure; including the processing of operations within the
-[pass manager](PassManagement.md/#pass-manager). One advantage of the MLIR design
-is that it is able to process operations in parallel, utilizing multiple
+With [Regions](LangRef.md/#regions), the multi-level aspect of MLIR is
+structural in the IR. A lot of infrastructure within the compiler is built
+around this nesting structure; including the processing of operations within the
+[pass manager](PassManagement.md/#pass-manager). One advantage of the MLIR
+design is that it is able to process operations in parallel, utilizing multiple
 threads. This is possible due to a property of the IR known as
 [`IsolatedFromAbove`](Traits.md/#isolatedfromabove).
 
@@ -33,7 +33,7 @@ result value, and may be referred to by other operations to provide a symbolic
 link, or use, to the symbol. An example of a `Symbol` operation is
 [`builtin.func`](Dialects/Builtin.md/#func-mlirfuncop). `builtin.func` defines a
 symbol name, which is [referred to](#referencing-a-symbol) by operations like
-[`std.call`](Dialects/Standard.md/#stdcall-callop).
+[`func.call`](Dialects/Func.md/#funccall-callop).
 
 ### Defining or declaring a Symbol
 
@@ -137,13 +137,13 @@ operations that materialize SSA values from a symbol reference. Each has
 different trade offs depending on the situation. A function call may directly
 use a `SymbolRef` as the callee, whereas a reference to a global variable might
 use a materialization operation so that the variable can be used in other
-operations like `std.addi`.
-[`llvm.mlir.addressof`](Dialects/LLVM.md/#llvmmliraddressof-mlirllvmaddressofop) is one example of
-such an operation.
+operations like `arith.addi`.
+[`llvm.mlir.addressof`](Dialects/LLVM.md/#llvmmliraddressof-mlirllvmaddressofop)
+is one example of such an operation.
 
 See the `LangRef` definition of the
-[`SymbolRefAttr`](Dialects/Builtin.md/#symbolrefattr) for more information
-about the structure of this attribute.
+[`SymbolRefAttr`](Dialects/Builtin.md/#symbolrefattr) for more information about
+the structure of this attribute.
 
 Operations that reference a `Symbol` and want to perform verification and
 general mutation of the symbol should implement the `SymbolUserOpInterface` to

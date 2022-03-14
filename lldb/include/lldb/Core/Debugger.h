@@ -176,7 +176,13 @@ public:
 
   repro::DataRecorder *GetInputRecorder();
 
-  void SetInputFile(lldb::FileSP file, repro::DataRecorder *recorder = nullptr);
+  Status SetInputString(const char *data);
+
+  // This method will setup data recorder if reproducer enabled.
+  // On reply mode this method should take instructions from reproducer file.
+  Status SetInputFile(lldb::FileSP file);
+
+  void SetInputFile(lldb::FileSP file, repro::DataRecorder *recorder);
 
   void SetOutputFile(lldb::FileSP file);
 
@@ -300,6 +306,10 @@ public:
 
   bool SetScriptLanguage(lldb::ScriptLanguage script_lang);
 
+  lldb::LanguageType GetREPLLanguage() const;
+
+  bool SetREPLLanguage(lldb::LanguageType repl_lang);
+
   uint32_t GetTerminalWidth() const;
 
   bool SetTerminalWidth(uint32_t term_width);
@@ -319,7 +329,17 @@ public:
 
   bool SetUseColor(bool use_color);
 
+  bool GetShowProgress() const;
+
+  llvm::StringRef GetShowProgressAnsiPrefix() const;
+
+  llvm::StringRef GetShowProgressAnsiSuffix() const;
+
   bool GetUseAutosuggestion() const;
+
+  llvm::StringRef GetAutosuggestionAnsiPrefix() const;
+
+  llvm::StringRef GetAutosuggestionAnsiSuffix() const;
 
   bool GetUseSourceCache() const;
 
@@ -425,11 +445,11 @@ protected:
                              uint64_t completed, uint64_t total,
                              llvm::Optional<lldb::user_id_t> debugger_id);
 
+  void PrintProgress(const Debugger::ProgressEventData &data);
+
   bool StartEventHandlerThread();
 
   void StopEventHandlerThread();
-
-  static lldb::thread_result_t EventHandlerThread(lldb::thread_arg_t arg);
 
   void PushIOHandler(const lldb::IOHandlerSP &reader_sp,
                      bool cancel_top_handler = true);
@@ -444,15 +464,17 @@ protected:
 
   void JoinIOHandlerThread();
 
-  static lldb::thread_result_t IOHandlerThread(lldb::thread_arg_t arg);
+  lldb::thread_result_t IOHandlerThread();
 
-  void DefaultEventHandler();
+  lldb::thread_result_t DefaultEventHandler();
 
   void HandleBreakpointEvent(const lldb::EventSP &event_sp);
 
   void HandleProcessEvent(const lldb::EventSP &event_sp);
 
   void HandleThreadEvent(const lldb::EventSP &event_sp);
+
+  void HandleProgressEvent(const lldb::EventSP &event_sp);
 
   // Ensures two threads don't attempt to flush process output in parallel.
   std::mutex m_output_flush_mutex;
@@ -501,6 +523,8 @@ protected:
 
   IOHandlerStack m_io_handler_stack;
   std::recursive_mutex m_io_handler_synchronous_mutex;
+
+  llvm::Optional<uint64_t> m_current_event_id;
 
   llvm::StringMap<std::weak_ptr<llvm::raw_ostream>> m_log_streams;
   std::shared_ptr<llvm::raw_ostream> m_log_callback_stream_sp;

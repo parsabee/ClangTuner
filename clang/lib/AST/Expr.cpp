@@ -202,6 +202,23 @@ bool Expr::isKnownToHaveBooleanValue(bool Semantic) const {
   return false;
 }
 
+const ValueDecl *
+Expr::getAsBuiltinConstantDeclRef(const ASTContext &Context) const {
+  Expr::EvalResult Eval;
+
+  if (EvaluateAsConstantExpr(Eval, Context)) {
+    APValue &Value = Eval.Val;
+
+    if (Value.isMemberPointer())
+      return Value.getMemberPointerDecl();
+
+    if (Value.isLValue() && Value.getLValueOffset().isZero())
+      return Value.getLValueBase().dyn_cast<const ValueDecl *>();
+  }
+
+  return nullptr;
+}
+
 // Amusing macro metaprogramming hack: check whether a class provides
 // a more specific implementation of getExprLoc().
 //
@@ -753,19 +770,18 @@ std::string PredefinedExpr::ComputeName(IdentKind IK, const Decl *CurrentDecl) {
 
     std::string TemplateParams;
     llvm::raw_string_ostream TOut(TemplateParams);
-    for (SpecsTy::reverse_iterator I = Specs.rbegin(), E = Specs.rend();
-         I != E; ++I) {
-      const TemplateParameterList *Params
-                  = (*I)->getSpecializedTemplate()->getTemplateParameters();
-      const TemplateArgumentList &Args = (*I)->getTemplateArgs();
+    for (const ClassTemplateSpecializationDecl *D : llvm::reverse(Specs)) {
+      const TemplateParameterList *Params =
+          D->getSpecializedTemplate()->getTemplateParameters();
+      const TemplateArgumentList &Args = D->getTemplateArgs();
       assert(Params->size() == Args.size());
       for (unsigned i = 0, numParams = Params->size(); i != numParams; ++i) {
         StringRef Param = Params->getParam(i)->getName();
         if (Param.empty()) continue;
         TOut << Param << " = ";
-        Args.get(i).print(
-            Policy, TOut,
-            TemplateParameterList::shouldIncludeTypeForArgument(Params, i));
+        Args.get(i).print(Policy, TOut,
+                          TemplateParameterList::shouldIncludeTypeForArgument(
+                              Policy, Params, i));
         TOut << ", ";
       }
     }
@@ -944,40 +960,10 @@ void CharacterLiteral::print(unsigned Val, CharacterKind Kind,
     break;
   }
 
-  switch (Val) {
-  case '\\':
-    OS << "'\\\\'";
-    break;
-  case '\'':
-    OS << "'\\''";
-    break;
-  case '\a':
-    // TODO: K&R: the meaning of '\\a' is different in traditional C
-    OS << "'\\a'";
-    break;
-  case '\b':
-    OS << "'\\b'";
-    break;
-  // Nonstandard escape sequence.
-  /*case '\e':
-    OS << "'\\e'";
-    break;*/
-  case '\f':
-    OS << "'\\f'";
-    break;
-  case '\n':
-    OS << "'\\n'";
-    break;
-  case '\r':
-    OS << "'\\r'";
-    break;
-  case '\t':
-    OS << "'\\t'";
-    break;
-  case '\v':
-    OS << "'\\v'";
-    break;
-  default:
+  StringRef Escaped = escapeCStyle<EscapeChar::Single>(Val);
+  if (!Escaped.empty()) {
+    OS << "'" << Escaped << "'";
+  } else {
     // A character literal might be sign-extended, which
     // would result in an invalid \U escape sequence.
     // FIXME: multicharacter literals such as '\xFF\xFF\xFF\xFF'
@@ -1147,8 +1133,9 @@ void StringLiteral::outputString(raw_ostream &OS) const {
 
   unsigned LastSlashX = getLength();
   for (unsigned I = 0, N = getLength(); I != N; ++I) {
-    switch (uint32_t Char = getCodeUnit(I)) {
-    default:
+    uint32_t Char = getCodeUnit(I);
+    StringRef Escaped = escapeCStyle<EscapeChar::Double>(Char);
+    if (Escaped.empty()) {
       // FIXME: Convert UTF-8 back to codepoints before rendering.
 
       // Convert UTF-16 surrogate pairs back to codepoints before rendering.
@@ -1176,7 +1163,7 @@ void StringLiteral::outputString(raw_ostream &OS) const {
           for (/**/; Shift >= 0; Shift -= 4)
             OS << Hex[(Char >> Shift) & 15];
           LastSlashX = I;
-          break;
+          continue;
         }
 
         if (Char > 0xffff)
@@ -1189,7 +1176,7 @@ void StringLiteral::outputString(raw_ostream &OS) const {
            << Hex[(Char >>  8) & 15]
            << Hex[(Char >>  4) & 15]
            << Hex[(Char >>  0) & 15];
-        break;
+        continue;
       }
 
       // If we used \x... for the previous character, and this character is a
@@ -1214,17 +1201,9 @@ void StringLiteral::outputString(raw_ostream &OS) const {
            << (char)('0' + ((Char >> 6) & 7))
            << (char)('0' + ((Char >> 3) & 7))
            << (char)('0' + ((Char >> 0) & 7));
-      break;
-    // Handle some common non-printable cases to make dumps prettier.
-    case '\\': OS << "\\\\"; break;
-    case '"': OS << "\\\""; break;
-    case '\a': OS << "\\a"; break;
-    case '\b': OS << "\\b"; break;
-    case '\f': OS << "\\f"; break;
-    case '\n': OS << "\\n"; break;
-    case '\r': OS << "\\r"; break;
-    case '\t': OS << "\\t"; break;
-    case '\v': OS << "\\v"; break;
+    } else {
+      // Handle some common non-printable cases to make dumps prettier.
+      OS << Escaped;
     }
   }
   OS << '"';
@@ -1265,7 +1244,7 @@ StringLiteral::getLocationOfByte(unsigned ByteNo, const SourceManager &SM,
     StringOffset = *StartTokenByteOffset;
     ByteNo -= StringOffset;
   }
-  while (1) {
+  while (true) {
     assert(TokNo < getNumConcatenated() && "Invalid byte number!");
     SourceLocation StrTokLoc = getStrTokenLoc(TokNo);
 
@@ -2361,10 +2340,8 @@ SourceLocation InitListExpr::getEndLoc() const {
   SourceLocation End = RBraceLoc;
   if (End.isInvalid()) {
     // Find the first non-null initializer from the end.
-    for (InitExprsTy::const_reverse_iterator I = InitExprs.rbegin(),
-         E = InitExprs.rend();
-         I != E; ++I) {
-      if (Stmt *S = *I) {
+    for (Stmt *S : llvm::reverse(InitExprs)) {
+      if (S) {
         End = S->getEndLoc();
         break;
       }
@@ -4116,7 +4093,7 @@ bool ExtVectorElementExpr::containsDuplicateElements() const {
     Comp = Comp.substr(1);
 
   for (unsigned i = 0, e = Comp.size(); i != e; ++i)
-    if (Comp.substr(i + 1).find(Comp[i]) != StringRef::npos)
+    if (Comp.substr(i + 1).contains(Comp[i]))
         return true;
 
   return false;
@@ -4684,6 +4661,7 @@ unsigned AtomicExpr::getNumSubExprs(AtomicOp Op) {
     return 2;
 
   case AO__opencl_atomic_load:
+  case AO__hip_atomic_load:
   case AO__c11_atomic_store:
   case AO__c11_atomic_exchange:
   case AO__atomic_load:
@@ -4695,6 +4673,7 @@ unsigned AtomicExpr::getNumSubExprs(AtomicOp Op) {
   case AO__c11_atomic_fetch_and:
   case AO__c11_atomic_fetch_or:
   case AO__c11_atomic_fetch_xor:
+  case AO__c11_atomic_fetch_nand:
   case AO__c11_atomic_fetch_max:
   case AO__c11_atomic_fetch_min:
   case AO__atomic_fetch_add:
@@ -4715,7 +4694,15 @@ unsigned AtomicExpr::getNumSubExprs(AtomicOp Op) {
   case AO__atomic_fetch_max:
     return 3;
 
+  case AO__hip_atomic_exchange:
+  case AO__hip_atomic_fetch_add:
+  case AO__hip_atomic_fetch_and:
+  case AO__hip_atomic_fetch_or:
+  case AO__hip_atomic_fetch_xor:
+  case AO__hip_atomic_fetch_min:
+  case AO__hip_atomic_fetch_max:
   case AO__opencl_atomic_store:
+  case AO__hip_atomic_store:
   case AO__opencl_atomic_exchange:
   case AO__opencl_atomic_fetch_add:
   case AO__opencl_atomic_fetch_sub:
@@ -4730,9 +4717,10 @@ unsigned AtomicExpr::getNumSubExprs(AtomicOp Op) {
   case AO__c11_atomic_compare_exchange_strong:
   case AO__c11_atomic_compare_exchange_weak:
     return 5;
-
+  case AO__hip_atomic_compare_exchange_strong:
   case AO__opencl_atomic_compare_exchange_strong:
   case AO__opencl_atomic_compare_exchange_weak:
+  case AO__hip_atomic_compare_exchange_weak:
   case AO__atomic_compare_exchange:
   case AO__atomic_compare_exchange_n:
     return 6;

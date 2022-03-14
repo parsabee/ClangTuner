@@ -6,7 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
@@ -37,8 +36,8 @@ struct TestPrintNestingPass
     if (!op->getAttrs().empty()) {
       printIndent() << op->getAttrs().size() << " attributes:\n";
       for (NamedAttribute attr : op->getAttrs())
-        printIndent() << " - '" << attr.first << "' : '" << attr.second
-                      << "'\n";
+        printIndent() << " - '" << attr.getName().getValue() << "' : '"
+                      << attr.getValue() << "'\n";
     }
 
     // Recurse into each of the regions attached to the operation.
@@ -88,7 +87,7 @@ struct TestPrintNestingPass
     return llvm::outs();
   }
 };
-} // end anonymous namespace
+} // namespace
 
 namespace mlir {
 void registerTestPrintNestingPass() {

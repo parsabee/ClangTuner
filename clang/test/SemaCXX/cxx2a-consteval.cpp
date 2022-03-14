@@ -612,3 +612,100 @@ using T = decltype(g(f()));
 static_assert(is_same<long, T>::value);
 
 } // namespace unevaluated
+
+namespace value_dependent {
+
+consteval int foo(int x) {
+  return x;
+}
+
+template <int X> constexpr int bar() {
+  // Previously this call was rejected as value-dependent constant expressions
+  // can't be immediately evaluated. Now we show that we don't immediately
+  // evaluate them until they are instantiated.
+  return foo(X);
+}
+
+template <typename T> constexpr int baz() {
+  constexpr int t = sizeof(T);
+  // Previously this call was rejected as `t` is value-dependent and its value
+  // is unknown until the function is instantiated. Now we show that we don't
+  // reject such calls.
+  return foo(t);
+}
+
+static_assert(bar<15>() == 15);
+static_assert(baz<int>() == sizeof(int));
+
+} // namespace value_dependent
+
+namespace PR50779 {
+struct derp {
+  int b = 0;
+};
+
+constexpr derp d;
+
+struct test {
+  consteval int operator[](int i) const { return {}; }
+  consteval const derp * operator->() const { return &d; }
+  consteval int f() const { return 12; } // expected-note 2{{declared here}}
+};
+
+constexpr test a;
+
+// We previously rejected both of these overloaded operators as taking the
+// address of a consteval function outside of an immediate context, but we
+// accepted direct calls to the overloaded operator. Now we show that we accept
+// both forms.
+constexpr int s = a.operator[](1);
+constexpr int t = a[1];
+constexpr int u = a.operator->()->b;
+constexpr int v = a->b;
+// FIXME: I believe this case should work, but we currently reject.
+constexpr int w = (a.*&test::f)(); // expected-error {{cannot take address of consteval function 'f' outside of an immediate invocation}}
+constexpr int x = a.f();
+
+// Show that we reject when not in an immediate context.
+int w2 = (a.*&test::f)(); // expected-error {{cannot take address of consteval function 'f' outside of an immediate invocation}}
+}
+
+namespace PR48235 {
+consteval int d() {
+  return 1;
+}
+
+struct A {
+  consteval int a() const { return 1; }
+
+  void b() {
+    this->a() + d(); // expected-error {{call to consteval function 'PR48235::A::a' is not a constant expression}} \
+                     // expected-note {{use of 'this' pointer is only allowed within the evaluation of a call to a 'constexpr' member function}}
+  }
+
+  void c() {
+    a() + d(); // expected-error {{call to consteval function 'PR48235::A::a' is not a constant expression}} \
+               // expected-note {{use of 'this' pointer is only allowed within the evaluation of a call to a 'constexpr' member function}}
+  }
+};
+} // PR48235
+
+namespace NamespaceScopeConsteval {
+struct S {
+  int Val; // expected-note {{subobject declared here}}
+  consteval S() {}
+};
+
+S s1; // expected-error {{call to consteval function 'NamespaceScopeConsteval::S::S' is not a constant expression}} \
+         expected-note {{subobject of type 'int' is not initialized}}
+
+template <typename Ty>
+struct T {
+  Ty Val; // expected-note {{subobject declared here}}
+  consteval T() {}
+};
+
+T<int> t; // expected-error {{call to consteval function 'NamespaceScopeConsteval::T<int>::T' is not a constant expression}} \
+             expected-note {{subobject of type 'int' is not initialized}}
+
+} // namespace NamespaceScopeConsteval

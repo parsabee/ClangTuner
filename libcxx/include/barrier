@@ -1,5 +1,5 @@
 // -*- C++ -*-
-//===--------------------------- barrier ----------------------------------===//
+//===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -47,13 +47,14 @@ namespace std
 
 #include <__availability>
 #include <__config>
+#include <__thread/timed_backoff_policy.h>
 #include <atomic>
 #ifndef _LIBCPP_HAS_NO_TREE_BARRIER
 # include <memory>
 #endif
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
-#pragma GCC system_header
+#  pragma GCC system_header
 #endif
 
 #ifdef _LIBCPP_HAS_NO_THREADS
@@ -125,7 +126,7 @@ public:
     __barrier_base(ptrdiff_t __expected, _CompletionF __completion = _CompletionF())
             : __expected(__expected), __base(__construct_barrier_algorithm_base(this->__expected),
                                              &__destroy_barrier_algorithm_base),
-              __expected_adjustment(0), __completion(move(__completion)), __phase(0)
+              __expected_adjustment(0), __completion(std::move(__completion)), __phase(0)
     {
     }
     [[nodiscard]] _LIBCPP_AVAILABILITY_SYNC _LIBCPP_INLINE_VISIBILITY
@@ -189,7 +190,7 @@ public:
 
     _LIBCPP_INLINE_VISIBILITY
     __barrier_base(ptrdiff_t __expected, _CompletionF __completion = _CompletionF())
-        : __expected(__expected), __arrived(__expected), __completion(move(__completion)), __phase(false)
+        : __expected(__expected), __arrived(__expected), __completion(std::move(__completion)), __phase(false)
     {
     }
     [[nodiscard]] _LIBCPP_AVAILABILITY_SYNC _LIBCPP_INLINE_VISIBILITY

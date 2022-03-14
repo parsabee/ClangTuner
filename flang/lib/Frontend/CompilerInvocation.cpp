@@ -9,6 +9,7 @@
 #include "flang/Frontend/CompilerInvocation.h"
 #include "flang/Common/Fortran-features.h"
 #include "flang/Frontend/PreprocessorOptions.h"
+#include "flang/Frontend/TargetOptions.h"
 #include "flang/Semantics/semantics.h"
 #include "flang/Version.inc"
 #include "clang/Basic/AllDiagnostics.h"
@@ -23,6 +24,7 @@
 #include "llvm/Option/OptTable.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
+#include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/raw_ostream.h"
 #include <memory>
@@ -87,6 +89,15 @@ bool Fortran::frontend::ParseDiagnosticArgs(clang::DiagnosticOptions &opts,
   return true;
 }
 
+/// Parses all target input arguments and populates the target
+/// options accordingly.
+///
+/// \param [in] opts The target options instance to update
+/// \param [in] args The list of input arguments (from the compiler invocation)
+static void ParseTargetArgs(TargetOptions &opts, llvm::opt::ArgList &args) {
+  opts.triple = args.getLastArgValue(clang::driver::options::OPT_triple);
+}
+
 // Tweak the frontend configuration based on the frontend action
 static void setUpFrontendBasedOnAction(FrontendOptions &opts) {
   assert(opts.programAction != Fortran::frontend::InvalidAction &&
@@ -107,6 +118,16 @@ static bool ParseFrontendArgs(FrontendOptions &opts, llvm::opt::ArgList &args,
   // By default the frontend driver creates a ParseSyntaxOnly action.
   opts.programAction = ParseSyntaxOnly;
 
+  // Treat multiple action options as an invocation error. Note that `clang
+  // -cc1` does accept multiple action options, but will only consider the
+  // rightmost one.
+  if (args.hasMultipleArgs(clang::driver::options::OPT_Action_Group)) {
+    const unsigned diagID = diags.getCustomDiagID(
+        clang::DiagnosticsEngine::Error, "Only one action option is allowed");
+    diags.Report(diagID);
+    return false;
+  }
+
   // Identify the action (i.e. opts.ProgramAction)
   if (const llvm::opt::Arg *a =
           args.getLastArg(clang::driver::options::OPT_Action_Group)) {
@@ -123,8 +144,17 @@ static bool ParseFrontendArgs(FrontendOptions &opts, llvm::opt::ArgList &args,
     case clang::driver::options::OPT_fsyntax_only:
       opts.programAction = ParseSyntaxOnly;
       break;
+    case clang::driver::options::OPT_emit_mlir:
+      opts.programAction = EmitMLIR;
+      break;
+    case clang::driver::options::OPT_emit_llvm:
+      opts.programAction = EmitLLVM;
+      break;
     case clang::driver::options::OPT_emit_obj:
       opts.programAction = EmitObj;
+      break;
+    case clang::driver::options::OPT_S:
+      opts.programAction = EmitAssembly;
       break;
     case clang::driver::options::OPT_fdebug_unparse:
       opts.programAction = DebugUnparse;
@@ -140,6 +170,9 @@ static bool ParseFrontendArgs(FrontendOptions &opts, llvm::opt::ArgList &args,
       break;
     case clang::driver::options::OPT_fdebug_dump_parse_tree:
       opts.programAction = DebugDumpParseTree;
+      break;
+    case clang::driver::options::OPT_fdebug_dump_pft:
+      opts.programAction = DebugDumpPFT;
       break;
     case clang::driver::options::OPT_fdebug_dump_all:
       opts.programAction = DebugDumpAll;
@@ -309,6 +342,11 @@ static bool ParseFrontendArgs(FrontendOptions &opts, llvm::opt::ArgList &args,
   opts.features.Enable(Fortran::common::LanguageFeature::XOROperator,
       args.hasFlag(clang::driver::options::OPT_fxor_operator,
           clang::driver::options::OPT_fno_xor_operator, false));
+
+  // -fno-automatic
+  if (args.hasArg(clang::driver::options::OPT_fno_automatic)) {
+    opts.features.Enable(Fortran::common::LanguageFeature::DefaultSave);
+  }
 
   if (args.hasArg(
           clang::driver::options::OPT_falternative_parameter_statement)) {
@@ -541,6 +579,7 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &res,
   }
 
   success &= ParseFrontendArgs(res.frontendOpts(), args, diags);
+  ParseTargetArgs(res.targetOpts(), args);
   parsePreprocessorArgs(res.preprocessorOpts(), args);
   success &= parseSemaArgs(res, args, diags);
   success &= parseDialectArgs(res, args, diags);
@@ -549,7 +588,7 @@ bool CompilerInvocation::CreateFromArgs(CompilerInvocation &res,
   return success;
 }
 
-void CompilerInvocation::collectMacroDefinitions() {
+void CompilerInvocation::CollectMacroDefinitions() {
   auto &ppOpts = this->preprocessorOpts();
 
   for (unsigned i = 0, n = ppOpts.macros.size(); i != n; ++i) {
@@ -591,7 +630,7 @@ void CompilerInvocation::SetDefaultFortranOpts() {
 // TODO: When expanding this method, consider creating a dedicated API for
 // this. Also at some point we will need to differentiate between different
 // targets and add dedicated predefines for each.
-void CompilerInvocation::setDefaultPredefinitions() {
+void CompilerInvocation::SetDefaultPredefinitions() {
   auto &fortranOptions = fortranOpts();
   const auto &frontendOptions = frontendOpts();
 
@@ -615,7 +654,7 @@ void CompilerInvocation::setDefaultPredefinitions() {
   }
 }
 
-void CompilerInvocation::setFortranOpts() {
+void CompilerInvocation::SetFortranOpts() {
   auto &fortranOptions = fortranOpts();
   const auto &frontendOptions = frontendOpts();
   const auto &preprocessorOptions = preprocessorOpts();
@@ -642,8 +681,8 @@ void CompilerInvocation::setFortranOpts() {
       preprocessorOptions.searchDirectoriesFromIntrModPath.begin(),
       preprocessorOptions.searchDirectoriesFromIntrModPath.end());
 
-  //  Add the default intrinsic module directory at the end
-  fortranOptions.searchDirectories.emplace_back(getIntrinsicDir());
+  //  Add the default intrinsic module directory
+  fortranOptions.intrinsicModuleDirectories.emplace_back(getIntrinsicDir());
 
   // Add the directory supplied through -J/-module-dir to the list of search
   // directories
@@ -661,7 +700,7 @@ void CompilerInvocation::setFortranOpts() {
   }
 }
 
-void CompilerInvocation::setSemanticsOpts(
+void CompilerInvocation::SetSemanticsOpts(
     Fortran::parser::AllCookedSources &allCookedSources) {
   const auto &fortranOptions = fortranOpts();
 
@@ -670,6 +709,7 @@ void CompilerInvocation::setSemanticsOpts(
 
   semanticsContext_->set_moduleDirectory(moduleDir())
       .set_searchDirectories(fortranOptions.searchDirectories)
+      .set_intrinsicModuleDirectories(fortranOptions.intrinsicModuleDirectories)
       .set_warnOnNonstandardUsage(enableConformanceChecks())
       .set_warningsAreErrors(warnAsErr())
       .set_moduleFileSuffix(moduleFileSuffix());

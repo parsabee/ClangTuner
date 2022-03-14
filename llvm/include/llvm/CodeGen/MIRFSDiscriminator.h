@@ -17,12 +17,7 @@
 #ifndef LLVM_CODEGEN_MIRFSDISCRIMINATOR_H
 #define LLVM_CODEGEN_MIRFSDISCRIMINATOR_H
 
-#include "llvm/Analysis/ProfileSummaryInfo.h"
-#include "llvm/CodeGen/MachineBasicBlock.h"
-#include "llvm/CodeGen/MachineBlockFrequencyInfo.h"
-#include "llvm/CodeGen/MachineBranchProbabilityInfo.h"
-#include "llvm/CodeGen/MachineDominators.h"
-#include "llvm/CodeGen/MachineFunction.h"
+#include "llvm/ADT/StringRef.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineLoopInfo.h"
@@ -55,6 +50,10 @@ public:
     LowBit = getFSPassBitBegin(P);
     HighBit = getFSPassBitEnd(P);
     assert(LowBit < HighBit && "HighBit needs to be greater than Lowbit");
+  }
+
+  StringRef getPassName() const override {
+    return "Add FS discriminators in MIR";
   }
 
   /// getNumFSBBs() - Return the number of machine BBs that have FS samples.

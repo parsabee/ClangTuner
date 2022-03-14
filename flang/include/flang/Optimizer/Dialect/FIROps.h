@@ -10,11 +10,10 @@
 #define FORTRAN_OPTIMIZER_DIALECT_FIROPS_H
 
 #include "flang/Optimizer/Dialect/FIRType.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
-
-using namespace mlir;
 
 namespace fir {
 
@@ -23,7 +22,7 @@ class DoLoopOp;
 class RealAttr;
 
 void buildCmpCOp(mlir::OpBuilder &builder, mlir::OperationState &result,
-                 mlir::CmpFPredicate predicate, mlir::Value lhs,
+                 mlir::arith::CmpFPredicate predicate, mlir::Value lhs,
                  mlir::Value rhs);
 unsigned getCaseArgumentOffset(llvm::ArrayRef<mlir::Attribute> cases,
                                unsigned dest);
@@ -36,6 +35,10 @@ mlir::ParseResult parseSelector(mlir::OpAsmParser &parser,
                                 mlir::OperationState &result,
                                 mlir::OpAsmParser::OperandType &selector,
                                 mlir::Type &type);
+
+static constexpr llvm::StringRef getAdaptToByRefAttrName() {
+  return "adapt.valuebyref";
+}
 
 } // namespace fir
 

@@ -11,20 +11,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/Host.h"
-#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Config/llvm-config.h"
-#include "llvm/Support/BCD.h"
-#include "llvm/Support/Debug.h"
-#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/X86TargetParser.h"
 #include "llvm/Support/raw_ostream.h"
-#include <assert.h>
 #include <string.h>
 
 // Include the platform-specific parts of this class.
@@ -83,12 +78,12 @@ StringRef sys::detail::getHostCPUNameForPowerPC(StringRef ProcCpuinfoContent) {
 
   StringRef::const_iterator CIP = CPUInfoStart;
 
-  StringRef::const_iterator CPUStart = 0;
+  StringRef::const_iterator CPUStart = nullptr;
   size_t CPULen = 0;
 
   // We need to find the first line which starts with cpu, spaces, and a colon.
   // After the colon, there may be some additional spaces and then the cpu type.
-  while (CIP < CPUInfoEnd && CPUStart == 0) {
+  while (CIP < CPUInfoEnd && CPUStart == nullptr) {
     if (CIP < CPUInfoEnd && *CIP == '\n')
       ++CIP;
 
@@ -118,12 +113,12 @@ StringRef sys::detail::getHostCPUNameForPowerPC(StringRef ProcCpuinfoContent) {
       }
     }
 
-    if (CPUStart == 0)
+    if (CPUStart == nullptr)
       while (CIP < CPUInfoEnd && *CIP != '\n')
         ++CIP;
   }
 
-  if (CPUStart == 0)
+  if (CPUStart == nullptr)
     return generic;
 
   return StringSwitch<const char *>(StringRef(CPUStart, CPULen))
@@ -211,8 +206,10 @@ StringRef sys::detail::getHostCPUNameForARM(StringRef ProcCpuinfoContent) {
         .Case("0xd0d", "cortex-a77")
         .Case("0xd41", "cortex-a78")
         .Case("0xd44", "cortex-x1")
+        .Case("0xd4c", "cortex-x1c")
         .Case("0xd0c", "neoverse-n1")
         .Case("0xd49", "neoverse-n2")
+        .Case("0xd40", "neoverse-v1")
         .Default("generic");
   }
 
@@ -1356,6 +1353,16 @@ StringRef sys::getHostCPUName() {
     return "generic";
   }
 }
+#elif defined(__riscv)
+StringRef sys::getHostCPUName() {
+#if __riscv_xlen == 64
+  return "generic-rv64";
+#elif __riscv_xlen == 32
+  return "generic-rv32";
+#else
+#error "Unhandled value of __riscv_xlen"
+#endif
+}
 #else
 StringRef sys::getHostCPUName() { return "generic"; }
 namespace llvm {
@@ -1694,6 +1701,9 @@ bool sys::getHostCPUFeatures(StringMap<bool> &Features) {
                                    .Case("asimd", "neon")
                                    .Case("fp", "fp-armv8")
                                    .Case("crc32", "crc")
+                                   .Case("atomics", "lse")
+                                   .Case("sve", "sve")
+                                   .Case("sve2", "sve2")
 #else
                                    .Case("half", "fp16")
                                    .Case("neon", "neon")

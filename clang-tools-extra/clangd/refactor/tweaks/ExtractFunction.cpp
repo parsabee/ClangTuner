@@ -56,13 +56,11 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/DeclBase.h"
-#include "clang/AST/DeclTemplate.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/AST/Stmt.h"
 #include "clang/Basic/LangOptions.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
-#include "clang/Lex/Lexer.h"
 #include "clang/Tooling/Core/Replacement.h"
 #include "clang/Tooling/Refactoring/Extract/SourceExtraction.h"
 #include "llvm/ADT/None.h"
@@ -71,7 +69,6 @@
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Error.h"
 
@@ -223,14 +220,13 @@ bool alwaysReturns(const ExtractionZone &EZ) {
   while (const auto *CS = llvm::dyn_cast<CompoundStmt>(Last)) {
     if (CS->body_empty())
       return false;
-    else
-      Last = CS->body_back();
+    Last = CS->body_back();
   }
   return llvm::isa<ReturnStmt>(Last);
 }
 
 bool ExtractionZone::isRootStmt(const Stmt *S) const {
-  return RootStmts.find(S) != RootStmts.end();
+  return RootStmts.contains(S);
 }
 
 // Finds the function in which the zone lies.

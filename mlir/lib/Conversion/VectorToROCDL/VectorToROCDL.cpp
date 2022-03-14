@@ -14,15 +14,14 @@
 #include "mlir/Conversion/VectorToROCDL/VectorToROCDL.h"
 
 #include "../PassDetail.h"
+#include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVM.h"
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/Pattern.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
-#include "mlir/Conversion/StandardToLLVM/ConvertStandardToLLVM.h"
 #include "mlir/Dialect/GPU/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
-#include "mlir/Dialect/StandardOps/IR/Ops.h"
-#include "mlir/Dialect/Vector/VectorOps.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 
@@ -64,6 +63,10 @@ public:
   LogicalResult
   matchAndRewrite(ConcreteOp xferOp, typename ConcreteOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    // TODO: support 0-d corner case.
+    if (xferOp.getTransferRank() == 0)
+      return failure();
+
     if (xferOp.getVectorType().getRank() > 1 ||
         llvm::size(xferOp.indices()) == 0)
       return failure();
@@ -141,7 +144,7 @@ public:
         vecTy, dwordConfig, int32Zero, int32Zero, int1False, int1False);
   }
 };
-} // end anonymous namespace
+} // namespace
 
 void mlir::populateVectorToROCDLConversionPatterns(
     LLVMTypeConverter &converter, RewritePatternSet &patterns) {
@@ -162,7 +165,7 @@ void LowerVectorToROCDLPass::runOnOperation() {
 
   populateVectorToROCDLConversionPatterns(converter, patterns);
   populateMemRefToLLVMConversionPatterns(converter, patterns);
-  populateStdToLLVMConversionPatterns(converter, patterns);
+  populateFuncToLLVMConversionPatterns(converter, patterns);
 
   LLVMConversionTarget target(getContext());
   target.addLegalDialect<ROCDL::ROCDLDialect>();

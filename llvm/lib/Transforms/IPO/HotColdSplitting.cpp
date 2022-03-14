@@ -294,7 +294,7 @@ static int getOutliningPenalty(ArrayRef<BasicBlock *> Region,
       // Find all incoming values from the outlining region.
       int NumIncomingVals = 0;
       for (unsigned i = 0; i < PN.getNumIncomingValues(); ++i)
-        if (find(Region, PN.getIncomingBlock(i)) != Region.end()) {
+        if (llvm::is_contained(Region, PN.getIncomingBlock(i))) {
           ++NumIncomingVals;
           if (NumIncomingVals > 1) {
             ++NumSplitExitPhis;
@@ -352,7 +352,7 @@ Function *HotColdSplitting::extractColdRegion(
   // TODO: Pass BFI and BPI to update profile information.
   CodeExtractor CE(Region, &DT, /* AggregateArgs */ false, /* BFI */ nullptr,
                    /* BPI */ nullptr, AC, /* AllowVarArgs */ false,
-                   /* AllowAlloca */ false,
+                   /* AllowAlloca */ false, /* AllocaBlock */ nullptr,
                    /* Suffix */ "cold." + std::to_string(Count));
 
   // Perform a simple cost/benefit analysis to decide whether or not to permit

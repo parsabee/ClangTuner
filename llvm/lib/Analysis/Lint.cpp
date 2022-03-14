@@ -44,7 +44,6 @@
 #include "llvm/Analysis/InstructionSimplify.h"
 #include "llvm/Analysis/Loads.h"
 #include "llvm/Analysis/MemoryLocation.h"
-#include "llvm/Analysis/Passes.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/ValueTracking.h"
 #include "llvm/IR/Argument.h"
@@ -69,9 +68,7 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/Debug.h"
 #include "llvm/Support/KnownBits.h"
-#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstdint>
@@ -715,6 +712,7 @@ PreservedAnalyses LintPass::run(Function &F, FunctionAnalysisManager &AM) {
   return PreservedAnalyses::all();
 }
 
+namespace {
 class LintLegacyPass : public FunctionPass {
 public:
   static char ID; // Pass identification, replacement for typeid
@@ -733,6 +731,7 @@ public:
   }
   void print(raw_ostream &O, const Module *M) const override {}
 };
+} // namespace
 
 char LintLegacyPass::ID = 0;
 INITIALIZE_PASS_BEGIN(LintLegacyPass, "lint", "Statically lint-checks LLVM IR",

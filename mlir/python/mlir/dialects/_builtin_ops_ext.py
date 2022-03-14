@@ -3,7 +3,7 @@
 #  SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 
 try:
-  from typing import Optional, Sequence
+  from typing import Optional, Sequence, Union
 
   import inspect
 
@@ -82,8 +82,8 @@ class FuncOp:
     return self.attributes["sym_visibility"]
 
   @property
-  def name(self):
-    return self.attributes["sym_name"]
+  def name(self) -> StringAttr:
+    return StringAttr(self.attributes["sym_name"])
 
   @property
   def entry_block(self):
@@ -104,11 +104,15 @@ class FuncOp:
 
   @property
   def arg_attrs(self):
-    return self.attributes[ARGUMENT_ATTRIBUTE_NAME]
+    return ArrayAttr(self.attributes[ARGUMENT_ATTRIBUTE_NAME])
 
   @arg_attrs.setter
-  def arg_attrs(self, attribute: ArrayAttr):
-    self.attributes[ARGUMENT_ATTRIBUTE_NAME] = attribute
+  def arg_attrs(self, attribute: Union[ArrayAttr, list]):
+    if isinstance(attribute, ArrayAttr):
+      self.attributes[ARGUMENT_ATTRIBUTE_NAME] = attribute
+    else:
+      self.attributes[ARGUMENT_ATTRIBUTE_NAME] = ArrayAttr.get(
+          attribute, context=self.context)
 
   @property
   def arguments(self):
@@ -158,7 +162,7 @@ class FuncOp:
     """
 
     def decorator(f):
-      from . import std
+      from . import func
       # Introspect the callable for optional features.
       sig = inspect.signature(f)
       has_arg_func_op = False
@@ -191,19 +195,28 @@ class FuncOp:
           # Coerce return values, add ReturnOp and rewrite func type.
           if return_values is None:
             return_values = []
+          elif isinstance(return_values, tuple):
+            return_values = list(return_values)
           elif isinstance(return_values, Value):
+            # Returning a single value is fine, coerce it into a list.
             return_values = [return_values]
+          elif isinstance(return_values, OpView):
+            # Returning a single operation is fine, coerce its results a list.
+            return_values = return_values.operation.results
+          elif isinstance(return_values, Operation):
+            # Returning a single operation is fine, coerce its results a list.
+            return_values = return_values.results
           else:
             return_values = list(return_values)
-          std.ReturnOp(return_values)
+          func.ReturnOp(return_values)
           # Recompute the function type.
           return_types = [v.type for v in return_values]
           function_type = FunctionType.get(inputs=inputs, results=return_types)
           func_op.attributes["type"] = TypeAttr.get(function_type)
 
       def emit_call_op(*call_args):
-        call_op = std.CallOp(return_types, FlatSymbolRefAttr.get(symbol_name),
-                             call_args)
+        call_op = func.CallOp(return_types, FlatSymbolRefAttr.get(symbol_name),
+                              call_args)
         if return_types is None:
           return None
         elif len(return_types) == 1:

@@ -22,6 +22,9 @@ using namespace sampleprof;
 namespace llvm {
 namespace sampleprof {
 
+using ProbeCounterMap =
+    std::unordered_map<const MCDecodedPseudoProbe *, uint64_t>;
+
 // This base class for profile generation of sample-based PGO. We reuse all
 // structures relating to function profiles and profile writers as seen in
 // /ProfileData/SampleProf.h.
@@ -34,9 +37,27 @@ public:
   virtual ~ProfileGeneratorBase() = default;
   static std::unique_ptr<ProfileGeneratorBase>
   create(ProfiledBinary *Binary, const ContextSampleCounterMap &SampleCounters,
-         bool ProfileIsCS);
+         bool ProfileIsCSFlat);
   virtual void generateProfile() = 0;
   void write();
+
+  static uint32_t
+  getDuplicationFactor(unsigned Discriminator,
+                       bool UseFSD = ProfileGeneratorBase::UseFSDiscriminator) {
+    return UseFSD ? 1
+                  : llvm::DILocation::getDuplicationFactorFromDiscriminator(
+                        Discriminator);
+  }
+
+  static uint32_t
+  getBaseDiscriminator(unsigned Discriminator,
+                       bool UseFSD = ProfileGeneratorBase::UseFSDiscriminator) {
+    return UseFSD ? Discriminator
+                  : DILocation::getBaseDiscriminatorFromDiscriminator(
+                        Discriminator, /* IsFSDiscriminator */ false);
+  }
+
+  static bool UseFSDiscriminator;
 
 protected:
   // Use SampleProfileWriter to serialize profile map
@@ -59,11 +80,35 @@ protected:
   */
   void findDisjointRanges(RangeSample &DisjointRanges,
                           const RangeSample &Ranges);
+
+  // Go through each address from range to extract the top frame probe by
+  // looking up in the Address2ProbeMap
+  void extractProbesFromRange(const RangeSample &RangeCounter,
+                              ProbeCounterMap &ProbeCounter,
+                              bool FindDisjointRanges = true);
+
   // Helper function for updating body sample for a leaf location in
   // FunctionProfile
   void updateBodySamplesforFunctionProfile(FunctionSamples &FunctionProfile,
                                            const SampleContextFrame &LeafLoc,
                                            uint64_t Count);
+  void updateTotalSamples();
+
+  StringRef getCalleeNameForOffset(uint64_t TargetOffset);
+
+  void computeSummaryAndThreshold();
+
+  void calculateAndShowDensity(const SampleProfileMap &Profiles);
+
+  double calculateDensity(const SampleProfileMap &Profiles,
+                          uint64_t HotCntThreshold);
+
+  void showDensitySuggestion(double Density);
+
+  // Thresholds from profile summary to answer isHotCount/isColdCount queries.
+  uint64_t HotCountThreshold;
+
+  uint64_t ColdCountThreshold;
 
   // Used by SampleProfileWriter
   SampleProfileMap ProfileMap;
@@ -83,6 +128,7 @@ public:
 
 private:
   void generateLineNumBasedProfile();
+  void generateProbeBasedProfile();
   RangeSample preprocessRangeCounter(const RangeSample &RangeCounter);
   FunctionSamples &getTopLevelFunctionProfile(StringRef FuncName);
   // Helper function to get the leaf frame's FunctionProfile by traversing the
@@ -94,10 +140,13 @@ private:
   void populateBodySamplesForAllFunctions(const RangeSample &RangeCounter);
   void
   populateBoundarySamplesForAllFunctions(const BranchSample &BranchCounters);
+  void populateBodySamplesWithProbesForAllFunctions(const RangeSample &RangeCounter);
+  void
+  populateBoundarySamplesWithProbesForAllFunctions(const BranchSample &BranchCounters);
+  void postProcessProfiles();
+  void trimColdProfiles(const SampleProfileMap &Profiles,
+                        uint64_t ColdCntThreshold);
 };
-
-using ProbeCounterMap =
-    std::unordered_map<const MCDecodedPseudoProbe *, uint64_t>;
 
 class CSProfileGenerator : public ProfileGeneratorBase {
 public:
@@ -235,8 +284,6 @@ private:
   // and trimming cold profiles, running preinliner on profiles.
   void postProcessProfiles();
 
-  void computeSummaryAndThreshold();
-
   void populateBodySamplesForFunction(FunctionSamples &FunctionProfile,
                                       const RangeSample &RangeCounters);
   void populateBoundarySamplesForFunction(SampleContextFrames ContextId,
@@ -245,10 +292,7 @@ private:
   void populateInferredFunctionSamples();
 
   void generateProbeBasedProfile();
-  // Go through each address from range to extract the top frame probe by
-  // looking up in the Address2ProbeMap
-  void extractProbesFromRange(const RangeSample &RangeCounter,
-                              ProbeCounterMap &ProbeCounter);
+
   // Fill in function body samples from probes
   void populateBodySamplesWithProbes(const RangeSample &RangeCounter,
                                      SampleContextFrames ContextStack);
@@ -259,9 +303,6 @@ private:
   FunctionSamples &
   getFunctionProfileForLeafProbe(SampleContextFrames ContextStack,
                                  const MCDecodedPseudoProbe *LeafProbe);
-  // Thresholds from profile summary to answer isHotCount/isColdCount queries.
-  uint64_t HotCountThreshold;
-  uint64_t ColdCountThreshold;
 
   // Underlying context table serves for sample profile writer.
   std::unordered_set<SampleContextFrameVector, SampleContextFrameHash> Contexts;

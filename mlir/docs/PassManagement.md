@@ -82,7 +82,7 @@ struct MyFunctionPass : public PassWrapper<MyFunctionPass,
     });
   }
 };
-} // end anonymous namespace
+} // namespace
 
 /// Register this pass so that it can be built via from a textual pass pipeline.
 /// (Pass registration is discussed more below)
@@ -670,13 +670,13 @@ options           ::= '{' (key ('=' value)?)+ '}'
 For example, the following pipeline:
 
 ```shell
-$ mlir-opt foo.mlir -cse -canonicalize -convert-std-to-llvm='use-bare-ptr-memref-call-conv=1'
+$ mlir-opt foo.mlir -cse -canonicalize -convert-func-to-llvm='use-bare-ptr-memref-call-conv=1'
 ```
 
 Can also be specified as (via the `-pass-pipeline` flag):
 
 ```shell
-$ mlir-opt foo.mlir -pass-pipeline='builtin.func(cse,canonicalize),convert-std-to-llvm{use-bare-ptr-memref-call-conv=1}'
+$ mlir-opt foo.mlir -pass-pipeline='builtin.func(cse,canonicalize),convert-func-to-llvm{use-bare-ptr-memref-call-conv=1}'
 ```
 
 In order to support round-tripping a pass to the textual representation using
@@ -997,7 +997,7 @@ pipeline. This display mode is available in mlir-opt via
 `-mlir-timing-display=list`.
 
 ```shell
-$ mlir-opt foo.mlir -mlir-disable-threading -pass-pipeline='builtin.func(cse,canonicalize)' -convert-std-to-llvm -mlir-timing -mlir-timing-display=list
+$ mlir-opt foo.mlir -mlir-disable-threading -pass-pipeline='builtin.func(cse,canonicalize)' -convert-func-to-llvm -mlir-timing -mlir-timing-display=list
 
 ===-------------------------------------------------------------------------===
                       ... Pass execution timing report ...
@@ -1022,7 +1022,7 @@ the most time, and can also be used to identify when analyses are being
 invalidated and recomputed. This is the default display mode.
 
 ```shell
-$ mlir-opt foo.mlir -mlir-disable-threading -pass-pipeline='builtin.func(cse,canonicalize)' -convert-std-to-llvm -mlir-timing
+$ mlir-opt foo.mlir -mlir-disable-threading -pass-pipeline='builtin.func(cse,canonicalize)' -convert-func-to-llvm -mlir-timing
 
 ===-------------------------------------------------------------------------===
                       ... Pass execution timing report ...
@@ -1053,7 +1053,7 @@ perceived time, or clock time, whereas the `User Time` will display the total
 cpu time.
 
 ```shell
-$ mlir-opt foo.mlir -pass-pipeline='builtin.func(cse,canonicalize)' -convert-std-to-llvm -mlir-timing
+$ mlir-opt foo.mlir -pass-pipeline='builtin.func(cse,canonicalize)' -convert-func-to-llvm -mlir-timing
 
 ===-------------------------------------------------------------------------===
                       ... Pass execution timing report ...
@@ -1093,8 +1093,8 @@ $ mlir-opt foo.mlir -pass-pipeline='builtin.func(cse)' -print-ir-before=cse
 
 *** IR Dump Before CSE ***
 func @simple_constant() -> (i32, i32) {
-  %c1_i32 = constant 1 : i32
-  %c1_i32_0 = constant 1 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c1_i32_0 = arith.constant 1 : i32
   return %c1_i32, %c1_i32_0 : i32, i32
 }
 ```
@@ -1109,7 +1109,7 @@ $ mlir-opt foo.mlir -pass-pipeline='builtin.func(cse)' -print-ir-after=cse
 
 *** IR Dump After CSE ***
 func @simple_constant() -> (i32, i32) {
-  %c1_i32 = constant 1 : i32
+  %c1_i32 = arith.constant 1 : i32
   return %c1_i32, %c1_i32 : i32, i32
 }
 ```
@@ -1130,7 +1130,7 @@ $ mlir-opt foo.mlir -pass-pipeline='builtin.func(cse,cse)' -print-ir-after=cse -
 
 *** IR Dump After CSE ***
 func @simple_constant() -> (i32, i32) {
-  %c1_i32 = constant 1 : i32
+  %c1_i32 = arith.constant 1 : i32
   return %c1_i32, %c1_i32 : i32, i32
 }
 ```
@@ -1145,7 +1145,7 @@ $ mlir-opt foo.mlir -pass-pipeline='builtin.func(cse,bad-pass)' -print-ir-failur
 
 *** IR Dump After BadPass Failed ***
 func @simple_constant() -> (i32, i32) {
-  %c1_i32 = constant 1 : i32
+  %c1_i32 = arith.constant 1 : i32
   return %c1_i32, %c1_i32 : i32, i32
 }
 ```
@@ -1165,8 +1165,8 @@ func @bar(%arg0: f32, %arg1: f32) -> f32 {
 }
 
 func @simple_constant() -> (i32, i32) {
-  %c1_i32 = constant 1 : i32
-  %c1_i32_0 = constant 1 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %c1_i32_0 = arith.constant 1 : i32
   return %c1_i32, %c1_i32_0 : i32, i32
 }
 
@@ -1176,7 +1176,7 @@ func @bar(%arg0: f32, %arg1: f32) -> f32 {
 }
 
 func @simple_constant() -> (i32, i32) {
-  %c1_i32 = constant 1 : i32
+  %c1_i32 = arith.constant 1 : i32
   return %c1_i32, %c1_i32 : i32, i32
 }
 ```

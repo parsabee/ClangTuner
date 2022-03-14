@@ -1080,8 +1080,13 @@ unsigned char Editline::TypedCharacter(int ch) {
   llvm::StringRef line(line_info->buffer,
                        line_info->lastchar - line_info->buffer);
 
+  const char *ansi_prefix =
+      m_color_prompts ? m_suggestion_ansi_prefix.c_str() : "";
+  const char *ansi_suffix =
+      m_color_prompts ? m_suggestion_ansi_suffix.c_str() : "";
+
   if (llvm::Optional<std::string> to_add = m_suggestion_callback(line)) {
-    std::string to_add_color = ANSI_FAINT + to_add.getValue() + ANSI_UNFAINT;
+    std::string to_add_color = ansi_prefix + to_add.getValue() + ansi_suffix;
     fputs(typed.c_str(), m_output_file);
     fputs(to_add_color.c_str(), m_output_file);
     size_t new_autosuggestion_size = line.size() + to_add->length();
@@ -1560,7 +1565,7 @@ bool Editline::GetLines(int first_line_number, StringList &lines,
   if (!interrupted) {
     // Save the completed entry in history before returning. Don't save empty
     // input as that just clutters the command history.
-    if (m_input_lines.size() > 1 || !m_input_lines.front().empty())
+    if (!m_input_lines.empty())
       m_history_sp->Enter(CombineLines(m_input_lines).c_str());
 
     lines = GetInputAsStringList();

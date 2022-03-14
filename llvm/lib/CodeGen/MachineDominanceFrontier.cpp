@@ -11,6 +11,8 @@
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/InitializePasses.h"
+#include "llvm/Pass.h"
+#include "llvm/PassRegistry.h"
 
 using namespace llvm;
 
@@ -29,9 +31,7 @@ INITIALIZE_PASS_DEPENDENCY(MachineDominatorTree)
 INITIALIZE_PASS_END(MachineDominanceFrontier, "machine-domfrontier",
                 "Machine Dominance Frontier Construction", true, true)
 
-MachineDominanceFrontier::MachineDominanceFrontier()
-  : MachineFunctionPass(ID),
-    Base() {
+MachineDominanceFrontier::MachineDominanceFrontier() : MachineFunctionPass(ID) {
   initializeMachineDominanceFrontierPass(*PassRegistry::getPassRegistry());
 }
 

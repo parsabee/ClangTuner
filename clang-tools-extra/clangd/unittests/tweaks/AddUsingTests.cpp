@@ -7,9 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Config.h"
-#include "TestTU.h"
 #include "TweakTesting.h"
-#include "gmock/gmock-matchers.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
 
@@ -444,6 +442,17 @@ one::t^wo::cc c;
 #include "test.hpp"
 using one::two::cc;using one::two::ee::ee_one;
 cc c;
+)cpp"},
+            // Template (like std::vector).
+            {R"cpp(
+#include "test.hpp"
+one::v^ec<int> foo;
+)cpp",
+             R"cpp(
+#include "test.hpp"
+using one::vec;
+
+vec<int> foo;
 )cpp"}};
   llvm::StringMap<std::string> EditedFiles;
   for (const auto &Case : Cases) {
@@ -461,6 +470,7 @@ public:
 };
 }
 using uu = two::cc;
+template<typename T> struct vec {};
 })cpp";
       EXPECT_EQ(apply(SubCase, &EditedFiles), Case.ExpectedSource);
     }

@@ -8,6 +8,7 @@
 
 #include "MCTargetDesc/X86BaseInfo.h"
 #include "MCTargetDesc/X86FixupKinds.h"
+#include "MCTargetDesc/X86InstrRelaxTables.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/BinaryFormat/ELF.h"
 #include "llvm/BinaryFormat/MachO.h"
@@ -29,9 +30,9 @@
 #include "llvm/MC/MCSectionMachO.h"
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCValue.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/raw_ostream.h"
 
 using namespace llvm;
@@ -116,13 +117,6 @@ cl::opt<bool> X86PadForBranchAlign(
     "x86-pad-for-branch-align", cl::init(true), cl::Hidden,
     cl::desc("Pad previous instructions to implement branch alignment"));
 
-class X86ELFObjectWriter : public MCELFObjectTargetWriter {
-public:
-  X86ELFObjectWriter(bool is64Bit, uint8_t OSABI, uint16_t EMachine,
-                     bool HasRelocationAddend, bool foobar)
-    : MCELFObjectTargetWriter(is64Bit, OSABI, EMachine, HasRelocationAddend) {}
-};
-
 class X86AsmBackend : public MCAsmBackend {
   const MCSubtargetInfo &STI;
   std::unique_ptr<const MCInstrInfo> MCII;
@@ -155,7 +149,7 @@ public:
       AlignBranchType.addKind(X86::AlignBranchJcc);
       AlignBranchType.addKind(X86::AlignBranchJmp);
     }
-    // Allow overriding defaults set by master flag
+    // Allow overriding defaults set by main flag
     if (X86AlignBranchBoundary.getNumOccurrences())
       AlignBoundary = assumeAligned(X86AlignBranchBoundary);
     if (X86AlignBranch.getNumOccurrences())
@@ -229,87 +223,7 @@ static unsigned getRelaxedOpcodeBranch(const MCInst &Inst, bool Is16BitMode) {
 
 static unsigned getRelaxedOpcodeArith(const MCInst &Inst) {
   unsigned Op = Inst.getOpcode();
-  switch (Op) {
-  default:
-    return Op;
-
-    // IMUL
-  case X86::IMUL16rri8: return X86::IMUL16rri;
-  case X86::IMUL16rmi8: return X86::IMUL16rmi;
-  case X86::IMUL32rri8: return X86::IMUL32rri;
-  case X86::IMUL32rmi8: return X86::IMUL32rmi;
-  case X86::IMUL64rri8: return X86::IMUL64rri32;
-  case X86::IMUL64rmi8: return X86::IMUL64rmi32;
-
-    // AND
-  case X86::AND16ri8: return X86::AND16ri;
-  case X86::AND16mi8: return X86::AND16mi;
-  case X86::AND32ri8: return X86::AND32ri;
-  case X86::AND32mi8: return X86::AND32mi;
-  case X86::AND64ri8: return X86::AND64ri32;
-  case X86::AND64mi8: return X86::AND64mi32;
-
-    // OR
-  case X86::OR16ri8: return X86::OR16ri;
-  case X86::OR16mi8: return X86::OR16mi;
-  case X86::OR32ri8: return X86::OR32ri;
-  case X86::OR32mi8: return X86::OR32mi;
-  case X86::OR64ri8: return X86::OR64ri32;
-  case X86::OR64mi8: return X86::OR64mi32;
-
-    // XOR
-  case X86::XOR16ri8: return X86::XOR16ri;
-  case X86::XOR16mi8: return X86::XOR16mi;
-  case X86::XOR32ri8: return X86::XOR32ri;
-  case X86::XOR32mi8: return X86::XOR32mi;
-  case X86::XOR64ri8: return X86::XOR64ri32;
-  case X86::XOR64mi8: return X86::XOR64mi32;
-
-    // ADD
-  case X86::ADD16ri8: return X86::ADD16ri;
-  case X86::ADD16mi8: return X86::ADD16mi;
-  case X86::ADD32ri8: return X86::ADD32ri;
-  case X86::ADD32mi8: return X86::ADD32mi;
-  case X86::ADD64ri8: return X86::ADD64ri32;
-  case X86::ADD64mi8: return X86::ADD64mi32;
-
-   // ADC
-  case X86::ADC16ri8: return X86::ADC16ri;
-  case X86::ADC16mi8: return X86::ADC16mi;
-  case X86::ADC32ri8: return X86::ADC32ri;
-  case X86::ADC32mi8: return X86::ADC32mi;
-  case X86::ADC64ri8: return X86::ADC64ri32;
-  case X86::ADC64mi8: return X86::ADC64mi32;
-
-    // SUB
-  case X86::SUB16ri8: return X86::SUB16ri;
-  case X86::SUB16mi8: return X86::SUB16mi;
-  case X86::SUB32ri8: return X86::SUB32ri;
-  case X86::SUB32mi8: return X86::SUB32mi;
-  case X86::SUB64ri8: return X86::SUB64ri32;
-  case X86::SUB64mi8: return X86::SUB64mi32;
-
-   // SBB
-  case X86::SBB16ri8: return X86::SBB16ri;
-  case X86::SBB16mi8: return X86::SBB16mi;
-  case X86::SBB32ri8: return X86::SBB32ri;
-  case X86::SBB32mi8: return X86::SBB32mi;
-  case X86::SBB64ri8: return X86::SBB64ri32;
-  case X86::SBB64mi8: return X86::SBB64mi32;
-
-    // CMP
-  case X86::CMP16ri8: return X86::CMP16ri;
-  case X86::CMP16mi8: return X86::CMP16mi;
-  case X86::CMP32ri8: return X86::CMP32ri;
-  case X86::CMP32mi8: return X86::CMP32mi;
-  case X86::CMP64ri8: return X86::CMP64ri32;
-  case X86::CMP64mi8: return X86::CMP64mi32;
-
-    // PUSH
-  case X86::PUSH32i8:  return X86::PUSHi32;
-  case X86::PUSH16i8:  return X86::PUSHi16;
-  case X86::PUSH64i8:  return X86::PUSH64i32;
-  }
+  return X86::getRelaxedOpcodeArith(Op);
 }
 
 static unsigned getRelaxedOpcode(const MCInst &Inst, bool Is16BitMode) {
@@ -1459,9 +1373,7 @@ public:
     unsigned NumDefCFAOffsets = 0;
     int MinAbsOffset = std::numeric_limits<int>::max();
 
-    for (unsigned i = 0, e = Instrs.size(); i != e; ++i) {
-      const MCCFIInstruction &Inst = Instrs[i];
-
+    for (const MCCFIInstruction &Inst : Instrs) {
       switch (Inst.getOperation()) {
       default:
         // Any other CFI directives indicate a frame that we aren't prepared

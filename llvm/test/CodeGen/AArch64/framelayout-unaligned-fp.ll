@@ -32,8 +32,8 @@ entry:
 ; CHECK-NEXT:  add     x29, sp, #8
 
 ; CHECK:       sub     sp, x29, #8
-; CHECK-NEXT:  ldr     x19, [sp, #24]
 ; CHECK-NEXT:  ldp     x29, x30, [sp, #8]
+; CHECK-NEXT:  ldr     x19, [sp, #24]
 ; CHECK-NEXT:  ldr     d8, [sp], #32
 ; CHECK-NEXT:  ret
 

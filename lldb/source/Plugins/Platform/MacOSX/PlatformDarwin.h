@@ -24,7 +24,7 @@
 
 class PlatformDarwin : public PlatformPOSIX {
 public:
-  PlatformDarwin(bool is_host);
+  using PlatformPOSIX::PlatformPOSIX;
 
   ~PlatformDarwin() override;
 
@@ -60,11 +60,11 @@ public:
   bool ModuleIsExcludedForUnconstrainedSearches(
       lldb_private::Target &target, const lldb::ModuleSP &module_sp) override;
 
-  bool ARMGetSupportedArchitectureAtIndex(uint32_t idx,
-                                          lldb_private::ArchSpec &arch);
+  void
+  ARMGetSupportedArchitectures(std::vector<lldb_private::ArchSpec> &archs,
+                               llvm::Optional<llvm::Triple::OSType> os = {});
 
-  bool x86GetSupportedArchitectureAtIndex(uint32_t idx,
-                                          lldb_private::ArchSpec &arch);
+  void x86GetSupportedArchitectures(std::vector<lldb_private::ArchSpec> &archs);
 
   uint32_t GetResumeCountForLaunchInfo(
       lldb_private::ProcessLaunchInfo &launch_info) override;
@@ -103,6 +103,9 @@ public:
   static lldb_private::FileSpec GetCurrentCommandLineToolsDirectory();
 
 protected:
+  static const char *GetCompatibleArch(lldb_private::ArchSpec::Core core,
+                                       size_t idx);
+
   struct CrashInfoAnnotations {
     uint64_t version;          // unsigned long
     uint64_t message;          // char *
@@ -140,6 +143,8 @@ protected:
       const lldb_private::FileSpecList *module_search_paths_ptr,
       llvm::SmallVectorImpl<lldb::ModuleSP> *old_modules, bool *did_create_ptr);
 
+  virtual bool CheckLocalSharedCache() const { return IsHost(); }
+
   struct SDKEnumeratorInfo {
     lldb_private::FileSpec found_path;
     lldb_private::XcodeSDK::Type sdk_type;
@@ -168,6 +173,9 @@ protected:
 
   static std::string FindComponentInPath(llvm::StringRef path,
                                          llvm::StringRef component);
+
+  // The OSType where lldb is running.
+  static llvm::Triple::OSType GetHostOSType();
 
   std::string m_developer_directory;
   llvm::StringMap<std::string> m_sdk_path;
