@@ -1485,7 +1485,6 @@ public:
     TilingPatterns<OpTypes...>::insert(patterns, options, f);
   }
 };
-
 } // namespace linalg
 } // namespace mlir
 

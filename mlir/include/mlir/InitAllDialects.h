@@ -32,6 +32,7 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
+#include "mlir/Dialect/Luminous/IR/LuminousDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/OpenACC/OpenACC.h"
@@ -72,6 +73,7 @@ inline void registerAllDialects(DialectRegistry &registry) {
                   DLTIDialect,
                   emitc::EmitCDialect,
                   gpu::GPUDialect,
+                  luminous::LuminousDialect,
                   LLVM::LLVMDialect,
                   linalg::LinalgDialect,
                   math::MathDialect,

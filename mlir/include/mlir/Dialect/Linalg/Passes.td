@@ -194,6 +194,7 @@ def LinalgPromotion : Pass<"linalg-promote-subviews", "FuncOp"> {
   let dependentDialects = ["linalg::LinalgDialect"];
 }
 
+
 def LinalgTiling : Pass<"linalg-tile", "FuncOp"> {
   let summary = "Tile operations in the linalg dialect";
   let constructor = "mlir::createLinalgTilingPass()";
@@ -213,6 +214,22 @@ def LinalgTiling : Pass<"linalg-tile", "FuncOp"> {
                "DistributionTypes (if loop-type=tiled_loop)",
                "llvm::cl::ZeroOrMore, llvm::cl::MiscFlags::CommaSeparated">
 
+  ];
+}
+
+def LinalgMemoryFootprintReduction :
+    Pass<"linalg-memory-footprint-reduce", "FuncOp"> {
+  let summary = "Brings the LinalgOps memory footprint below maxMemFootprint";
+  let constructor = "mlir::createLinalgMemoryFootprintReductionPass()";
+  let options = [
+    Option<"maxMemFootprint", "linalg-max-memory-footprint", "int64_t", 
+            /*default=*/"0", "Maximum memory footprint in bytes">
+  ];
+  let dependentDialects = [
+    "AffineDialect",
+    "linalg::LinalgDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
   ];
 }
 
