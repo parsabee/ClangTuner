@@ -108,6 +108,7 @@ def Luminous_LuminousFuncOp : Luminous_Op<"func", [
     ```
   }];
 
+  let arguments = (ins TypeAttrOf<FunctionType>:$function_type);
   let regions = (region AnyRegion : $body);
   let skipDefaultBuilders = 1;
 
@@ -118,19 +119,19 @@ def Luminous_LuminousFuncOp : Luminous_Op<"func", [
 
   let extraClassDeclaration = [{
     /// FIXME: We should drive this via the ODS `type` param.
-    FunctionType getType() {
-      return getTypeAttr().getValue().cast<FunctionType>();
+    FunctionType getFunctionType() {
+      return function_type();
     }
 
     /// Hooks for the input/output type enumeration in FunctionLike .
-    unsigned getNumFuncArguments() { return getType().getNumInputs(); }
-    unsigned getNumFuncResults() { return getType().getNumResults(); }
+    unsigned getNumFuncArguments() { return getFunctionType().getNumInputs(); }
+    unsigned getNumFuncResults() { return getFunctionType().getNumResults(); }
 
     /// Returns the argument types of this function.
-    ArrayRef<Type> getArgumentTypes() { return getType().getInputs(); }
+    ArrayRef<Type> getArgumentTypes() { return getFunctionType().getInputs(); }
 
     /// Returns the result types of this function.
-    ArrayRef<Type> getResultTypes() { return getType().getResults(); }
+    ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
 
     /// Hook for FunctionLike verifier.
     LogicalResult verifyType();
@@ -139,7 +140,7 @@ def Luminous_LuminousFuncOp : Luminous_Op<"func", [
     LogicalResult verifyBody();
   }];
 
-  let verifier = [{ return ::verify(*this); }];
+  let hasVerifier = 1;
   let hasCustomAssemblyFormat = 1;
 }
 
@@ -221,7 +222,7 @@ def Luminous_DispatchOp : Luminous_Op<"dispatch", [AttrSizedOperandSegments]>,
                                                                    NamedAttribute attr);
   }];
 
-  let verifier = [{ return ::verify(*this); }];
+  let hasVerifier = 1;
   let assemblyFormat = [{
     custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
     $function

@@ -54,7 +54,8 @@ static LogicalResult applyPatterns(ModuleOp module) {
   return applyPartialConversion(module, target, frozen);
 }
 
-/// A pass converting SCF operations to OpenMP operations.
+/// A pass converting parallel loops with luminous launch attribute
+/// to Luminous operations.
 struct SCFToLuminousPass
     : public ConvertParallelLoopToLuminousDispatchBase<SCFToLuminousPass> {
   /// Pass entry point.

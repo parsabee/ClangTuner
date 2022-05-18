@@ -54,6 +54,17 @@ public:
   // description is not provided, returns the TableGen def name.
   StringRef getSummary() const;
 
+  /// Returns the name of the TablGen def of this constraint. In some cases
+  /// where the current def is anonymous, the name of the base def is used (e.g.
+  /// `Optional<>`/`Variadic<>` type constraints).
+  StringRef getDefName() const;
+
+  /// Returns a unique name for the TablGen def of this constraint. This is
+  /// generally just the name of the def, but in some cases where the current
+  /// def is anonymous, the name of the base def is attached (to provide more
+  /// context on the def).
+  std::string getUniqueDefName() const;
+
   Kind getKind() const { return kind; }
 
 protected:
@@ -61,6 +72,9 @@ protected:
   const llvm::Record *def;
 
 private:
+  /// Return the name of the base def if there is one, or None otherwise.
+  Optional<StringRef> getBaseDefName() const;
+
   // What kind of constraint this is.
   Kind kind;
 };

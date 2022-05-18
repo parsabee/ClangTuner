@@ -1085,7 +1085,8 @@ InstructionCost X86TTIImpl::getArithmeticInstrCost(
 InstructionCost X86TTIImpl::getShuffleCost(TTI::ShuffleKind Kind,
                                            VectorType *BaseTp,
                                            ArrayRef<int> Mask, int Index,
-                                           VectorType *SubTp) {
+                                           VectorType *SubTp,
+                                           ArrayRef<const Value *> Args) {
   // 64-bit packed float vectors (v2f32) are widened to type v4f32.
   // 64-bit packed integer vectors (v2i32) are widened to type v4i32.
   std::pair<InstructionCost, MVT> LT = TLI->getTypeLegalizationCost(DL, BaseTp);
@@ -1222,6 +1223,57 @@ InstructionCost X86TTIImpl::getShuffleCost(TTI::ShuffleKind Kind,
 
       auto *SingleOpTy = FixedVectorType::get(BaseTp->getElementType(),
                                               LegalVT.getVectorNumElements());
+
+      if (!Mask.empty() && NumOfDests.isValid()) {
+        // Try to perform better estimation of the permutation.
+        // 1. Split the source/destination vectors into real registers.
+        // 2. Do the mask analysis to identify which real registers are
+        // permuted. If more than 1 source registers are used for the
+        // destination register building, the cost for this destination register
+        // is (Number_of_source_register - 1) * Cost_PermuteTwoSrc. If only one
+        // source register is used, build mask and calculate the cost as a cost
+        // of PermuteSingleSrc.
+        // Also, for the single register permute we try to identify if the
+        // destination register is just a copy of the source register or the
+        // copy of the previous destination register (the cost is
+        // TTI::TCC_Basic). If the source register is just reused, the cost for
+        // this operation is 0.
+        unsigned E = *NumOfDests.getValue();
+        unsigned PrevSrcReg = 0;
+        ArrayRef<int> PrevRegMask;
+        InstructionCost Cost = 0;
+        processShuffleMasks(
+            Mask, NumOfSrcs, E, E, []() {},
+            [this, SingleOpTy, &PrevSrcReg, &PrevRegMask,
+             &Cost](ArrayRef<int> RegMask, unsigned SrcReg, unsigned DestReg) {
+              if (!ShuffleVectorInst::isIdentityMask(RegMask)) {
+                // Check if the previous register can be just copied to the next
+                // one.
+                if (PrevRegMask.empty() || PrevSrcReg != SrcReg ||
+                    PrevRegMask != RegMask)
+                  Cost += getShuffleCost(TTI::SK_PermuteSingleSrc, SingleOpTy,
+                                         RegMask, 0, nullptr);
+                else
+                  // Just a copy of previous destination register.
+                  Cost += TTI::TCC_Basic;
+                return;
+              }
+              if (SrcReg != DestReg &&
+                  any_of(RegMask, [](int I) { return I != UndefMaskElem; })) {
+                // Just a copy of the source register.
+                Cost += TTI::TCC_Basic;
+              }
+              PrevSrcReg = SrcReg;
+              PrevRegMask = RegMask;
+            },
+            [this, SingleOpTy, &Cost](ArrayRef<int> RegMask,
+                                      unsigned /*Unused*/,
+                                      unsigned /*Unused*/) {
+              Cost += getShuffleCost(TTI::SK_PermuteTwoSrc, SingleOpTy, RegMask,
+                                     0, nullptr);
+            });
+        return Cost;
+      }
 
       InstructionCost NumOfShuffles = (NumOfSrcs - 1) * NumOfDests;
       return NumOfShuffles * getShuffleCost(TTI::SK_PermuteTwoSrc, SingleOpTy,
@@ -1545,9 +1597,25 @@ InstructionCost X86TTIImpl::getShuffleCost(TTI::ShuffleKind Kind,
     { TTI::SK_PermuteTwoSrc,    MVT::v16i8, 13 }, // blend+permute
   };
 
-  if (ST->hasSSE2())
+  static const CostTblEntry SSE3BroadcastLoadTbl[] = {
+      {TTI::SK_Broadcast, MVT::v2f64, 0}, // broadcast handled by movddup
+  };
+
+  if (ST->hasSSE2()) {
+    bool IsLoad =
+        llvm::any_of(Args, [](const auto &V) { return isa<LoadInst>(V); });
+    if (ST->hasSSE3() && IsLoad)
+      if (const auto *Entry =
+              CostTableLookup(SSE3BroadcastLoadTbl, Kind, LT.second)) {
+        assert(isLegalBroadcastLoad(BaseTp->getElementType(),
+                                    LT.second.getVectorElementCount()) &&
+               "Table entry missing from isLegalBroadcastLoad()");
+        return LT.first * Entry->Cost;
+      }
+
     if (const auto *Entry = CostTableLookup(SSE2ShuffleTbl, Kind, LT.second))
       return LT.first * Entry->Cost;
+  }
 
   static const CostTblEntry SSE1ShuffleTbl[] = {
     { TTI::SK_Broadcast,        MVT::v4f32, 1 }, // shufps
@@ -2677,7 +2745,7 @@ InstructionCost X86TTIImpl::getCmpSelInstrCost(unsigned Opcode, Type *ValTy,
   static const CostTblEntry SSE2CostTbl[] = {
     { ISD::SETCC,   MVT::v2f64,   2 },
     { ISD::SETCC,   MVT::f64,     1 },
-    { ISD::SETCC,   MVT::v2i64,   8 },
+    { ISD::SETCC,   MVT::v2i64,   5 }, // pcmpeqd/pcmpgtd expansion
     { ISD::SETCC,   MVT::v4i32,   1 },
     { ISD::SETCC,   MVT::v8i16,   1 },
     { ISD::SETCC,   MVT::v16i8,   1 },
@@ -3589,6 +3657,12 @@ InstructionCost X86TTIImpl::getVectorInstrCost(unsigned Opcode, Type *Val,
 
   if (Index != -1U && (Opcode == Instruction::ExtractElement ||
                        Opcode == Instruction::InsertElement)) {
+    // Extraction of vXi1 elements are now efficiently handled by MOVMSK.
+    if (Opcode == Instruction::ExtractElement &&
+        ScalarType->getScalarSizeInBits() == 1 &&
+        cast<FixedVectorType>(Val)->getNumElements() > 1)
+      return 1;
+
     // Legalize the type.
     std::pair<InstructionCost, MVT> LT = TLI->getTypeLegalizationCost(DL, Val);
 
@@ -5110,6 +5184,14 @@ bool X86TTIImpl::isLegalNTStore(Type *DataType, Align Alignment) {
   if (DataSize == 16)
     return ST->hasSSE1();
   return true;
+}
+
+bool X86TTIImpl::isLegalBroadcastLoad(Type *ElementTy,
+                                      ElementCount NumElements) const {
+  // movddup
+  return ST->hasSSE3() && !NumElements.isScalable() &&
+         NumElements.getFixedValue() == 2 &&
+         ElementTy == Type::getDoubleTy(ElementTy->getContext());
 }
 
 bool X86TTIImpl::isLegalMaskedExpandLoad(Type *DataTy) {

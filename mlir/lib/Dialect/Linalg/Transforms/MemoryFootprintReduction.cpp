@@ -172,7 +172,7 @@ static void insertTilingPatterns(int64_t maxMemoryFootprint,
 }
 
 static void
-applyTilingToLoopPatterns(int64_t maxMemoryFootprint, FuncOp funcOp,
+applyTilingToLoopPatterns(int64_t maxMemoryFootprint, func::FuncOp funcOp,
                           TileSizeComputationFunction tileCompFunc,
                           ArrayRef<StringRef> distributionTypes = {}) {
   auto options = LinalgTilingOptions()
@@ -227,7 +227,7 @@ struct LinalgMemoryFootprintReductionPass
 };
 } // namespace
 
-std::unique_ptr<OperationPass<FuncOp>>
+std::unique_ptr<OperationPass<func::FuncOp>>
 mlir::createLinalgMemoryFootprintReductionPass(int64_t maxFootprint,
                                                MemReduceFn fn) {
   return std::make_unique<LinalgMemoryFootprintReductionPass>(maxFootprint, fn);

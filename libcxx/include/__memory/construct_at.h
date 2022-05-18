@@ -21,7 +21,6 @@
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
-#  pragma clang include_instead(<memory>)
 #endif
 
 _LIBCPP_BEGIN_NAMESPACE_STD
@@ -35,7 +34,7 @@ template<class _Tp, class ..._Args, class = decltype(
 )>
 _LIBCPP_HIDE_FROM_ABI
 constexpr _Tp* construct_at(_Tp* __location, _Args&& ...__args) {
-    _LIBCPP_ASSERT(__location, "null pointer given to construct_at");
+    _LIBCPP_ASSERT(__location != nullptr, "null pointer given to construct_at");
     return ::new (_VSTD::__voidify(*__location)) _Tp(_VSTD::forward<_Args>(__args)...);
 }
 
@@ -53,7 +52,7 @@ _ForwardIterator __destroy(_ForwardIterator, _ForwardIterator);
 template <class _Tp, typename enable_if<!is_array<_Tp>::value, int>::type = 0>
 _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_AFTER_CXX17
 void __destroy_at(_Tp* __loc) {
-    _LIBCPP_ASSERT(__loc, "null pointer given to destroy_at");
+    _LIBCPP_ASSERT(__loc != nullptr, "null pointer given to destroy_at");
     __loc->~_Tp();
 }
 
@@ -61,7 +60,7 @@ void __destroy_at(_Tp* __loc) {
 template <class _Tp, typename enable_if<is_array<_Tp>::value, int>::type = 0>
 _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_AFTER_CXX17
 void __destroy_at(_Tp* __loc) {
-    _LIBCPP_ASSERT(__loc, "null pointer given to destroy_at");
+    _LIBCPP_ASSERT(__loc != nullptr, "null pointer given to destroy_at");
     _VSTD::__destroy(_VSTD::begin(*__loc), _VSTD::end(*__loc));
 }
 #endif

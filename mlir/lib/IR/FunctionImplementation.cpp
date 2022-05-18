@@ -15,9 +15,9 @@ using namespace mlir;
 
 ParseResult mlir::function_interface_impl::parseFunctionArgumentList(
     OpAsmParser &parser, bool allowAttributes, bool allowVariadic,
-    SmallVectorImpl<OpAsmParser::OperandType> &argNames,
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &argNames,
     SmallVectorImpl<Type> &argTypes, SmallVectorImpl<NamedAttrList> &argAttrs,
-    SmallVectorImpl<Location> &argLocations, bool &isVariadic) {
+    bool &isVariadic) {
   if (parser.parseLParen())
     return failure();
 
@@ -28,15 +28,15 @@ ParseResult mlir::function_interface_impl::parseFunctionArgumentList(
     SMLoc loc = parser.getCurrentLocation();
 
     // Parse argument name if present.
-    OpAsmParser::OperandType argument;
+    OpAsmParser::UnresolvedOperand argument;
     Type argumentType;
     if (succeeded(parser.parseOptionalRegionArgument(argument)) &&
         !argument.name.empty()) {
       // Reject this if the preceding argument was missing a name.
       if (argNames.empty() && !argTypes.empty())
         return parser.emitError(loc, "expected type instead of SSA identifier");
-      argNames.push_back(argument);
 
+      // Parse required type.
       if (parser.parseColonType(argumentType))
         return failure();
     } else if (allowVariadic && succeeded(parser.parseOptionalEllipsis())) {
@@ -52,23 +52,19 @@ ParseResult mlir::function_interface_impl::parseFunctionArgumentList(
     // Add the argument type.
     argTypes.push_back(argumentType);
 
-    // Parse any argument attributes.
+    // Parse any argument attributes and source location information.
     NamedAttrList attrs;
-    if (parser.parseOptionalAttrDict(attrs))
+    if (parser.parseOptionalAttrDict(attrs) ||
+        parser.parseOptionalLocationSpecifier(argument.sourceLoc))
       return failure();
+         
     if (!allowAttributes && !attrs.empty())
       return parser.emitError(loc, "expected arguments without attributes");
     argAttrs.push_back(attrs);
 
-    // Parse a location if specified.
-    Optional<Location> explicitLoc;
-    if (!argument.name.empty() &&
-        parser.parseOptionalLocationSpecifier(explicitLoc))
-      return failure();
-    if (!explicitLoc)
-      explicitLoc = parser.getEncodedSourceLoc(loc);
-    argLocations.push_back(*explicitLoc);
-
+    // If we had an argument name, then remember the parsed argument.
+    if (!argument.name.empty())
+      argNames.push_back(argument);
     return success();
   };
 
@@ -133,14 +129,13 @@ parseFunctionResultList(OpAsmParser &parser, SmallVectorImpl<Type> &resultTypes,
 
 ParseResult mlir::function_interface_impl::parseFunctionSignature(
     OpAsmParser &parser, bool allowVariadic,
-    SmallVectorImpl<OpAsmParser::OperandType> &argNames,
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &argNames,
     SmallVectorImpl<Type> &argTypes, SmallVectorImpl<NamedAttrList> &argAttrs,
-    SmallVectorImpl<Location> &argLocations, bool &isVariadic,
-    SmallVectorImpl<Type> &resultTypes,
+    bool &isVariadic, SmallVectorImpl<Type> &resultTypes,
     SmallVectorImpl<NamedAttrList> &resultAttrs) {
   bool allowArgAttrs = true;
   if (parseFunctionArgumentList(parser, allowArgAttrs, allowVariadic, argNames,
-                                argTypes, argAttrs, argLocations, isVariadic))
+                                argTypes, argAttrs, isVariadic))
     return failure();
   if (succeeded(parser.parseOptionalArrow()))
     return parseFunctionResultList(parser, resultTypes, resultAttrs);
@@ -194,12 +189,11 @@ void mlir::function_interface_impl::addArgAndResultAttrs(
 ParseResult mlir::function_interface_impl::parseFunctionOp(
     OpAsmParser &parser, OperationState &result, bool allowVariadic,
     FuncTypeBuilder funcTypeBuilder) {
-  SmallVector<OpAsmParser::OperandType> entryArgs;
+  SmallVector<OpAsmParser::UnresolvedOperand> entryArgs;
   SmallVector<NamedAttrList> argAttrs;
   SmallVector<NamedAttrList> resultAttrs;
   SmallVector<Type> argTypes;
   SmallVector<Type> resultTypes;
-  SmallVector<Location> argLocations;
   auto &builder = parser.getBuilder();
 
   // Parse visibility.
@@ -215,8 +209,7 @@ ParseResult mlir::function_interface_impl::parseFunctionOp(
   SMLoc signatureLocation = parser.getCurrentLocation();
   bool isVariadic = false;
   if (parseFunctionSignature(parser, allowVariadic, entryArgs, argTypes,
-                             argAttrs, argLocations, isVariadic, resultTypes,
-                             resultAttrs))
+                             argAttrs, isVariadic, resultTypes, resultAttrs))
     return failure();
 
   std::string errorMessage;
@@ -259,7 +252,6 @@ ParseResult mlir::function_interface_impl::parseFunctionOp(
   SMLoc loc = parser.getCurrentLocation();
   OptionalParseResult parseResult = parser.parseOptionalRegion(
       *body, entryArgs, entryArgs.empty() ? ArrayRef<Type>() : argTypes,
-      entryArgs.empty() ? ArrayRef<Location>() : argLocations,
       /*enableNameShadowing=*/false);
   if (parseResult.hasValue()) {
     if (failed(*parseResult))
@@ -344,9 +336,9 @@ void mlir::function_interface_impl::printFunctionAttributes(
   p.printOptionalAttrDictWithKeyword(op->getAttrs(), ignoredAttrs);
 }
 
-void mlir::function_interface_impl::printFunctionOp(
-    OpAsmPrinter &p, Operation *op, ArrayRef<Type> argTypes, bool isVariadic,
-    ArrayRef<Type> resultTypes) {
+void mlir::function_interface_impl::printFunctionOp(OpAsmPrinter &p,
+                                                    FunctionOpInterface op,
+                                                    bool isVariadic) {
   // Print the operation and the function name.
   auto funcName =
       op->getAttrOfType<StringAttr>(SymbolTable::getSymbolAttrName())
@@ -358,6 +350,8 @@ void mlir::function_interface_impl::printFunctionOp(
     p << visibility.getValue() << ' ';
   p.printSymbolName(funcName);
 
+  ArrayRef<Type> argTypes = op.getArgumentTypes();
+  ArrayRef<Type> resultTypes = op.getResultTypes();
   printFunctionSignature(p, op, argTypes, isVariadic, resultTypes);
   printFunctionAttributes(p, op, argTypes.size(), resultTypes.size(),
                           {visibilityAttrName});

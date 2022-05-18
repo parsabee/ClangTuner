@@ -160,8 +160,6 @@ public:
       exitFunction();
     } else if constexpr (lower::pft::isConstruct<A> ||
                          lower::pft::isDirective<A>) {
-      if constexpr (lower::pft::isDeclConstruct<A>)
-        return;
       exitConstructOrDirective();
     }
   }
@@ -245,11 +243,6 @@ private:
     if (evaluationListStack.empty())
       return;
     auto evaluationList = evaluationListStack.back();
-    if (evaluationList->empty() &&
-        pftParentStack.back().getIf<lower::pft::ModuleLikeUnit>()) {
-      popEvaluationList();
-      return;
-    }
     if (evaluationList->empty() || !evaluationList->back().isEndStmt()) {
       const auto &endStmt =
           pftParentStack.back().get<lower::pft::FunctionLikeUnit>().endStmt;
@@ -279,10 +272,20 @@ private:
     lastLexicalEvaluation = nullptr;
   }
 
+  /// Pop the ModuleLikeUnit evaluationList when entering the first module
+  /// procedure.
+  void cleanModuleEvaluationList() {
+    if (evaluationListStack.empty())
+      return;
+    if (pftParentStack.back().isA<lower::pft::ModuleLikeUnit>())
+      popEvaluationList();
+  }
+
   /// Initialize a new function-like unit and make it the builder's focus.
   template <typename A>
   bool enterFunction(const A &func,
                      const semantics::SemanticsContext &semanticsContext) {
+    cleanModuleEvaluationList();
     endFunctionBody(); // enclosing host subprogram body, if any
     Fortran::lower::pft::FunctionLikeUnit &unit =
         addFunction(lower::pft::FunctionLikeUnit{func, pftParentStack.back(),
@@ -316,12 +319,6 @@ private:
     pushEvaluationList(eval.evaluationList.get());
     pftParentStack.emplace_back(eval);
     constructAndDirectiveStack.emplace_back(&eval);
-    if constexpr (lower::pft::isDeclConstruct<A>) {
-      popEvaluationList();
-      pftParentStack.pop_back();
-      constructAndDirectiveStack.pop_back();
-      popEvaluationList();
-    }
     return true;
   }
 
@@ -747,6 +744,11 @@ private:
             assert(construct && "missing EXIT construct");
             markBranchTarget(eval, *construct->constructExit);
           },
+          [&](const parser::FailImageStmt &) {
+            eval.isUnstructured = true;
+            if (eval.lexicalSuccessor->lexicalSuccessor)
+              markSuccessorAsNewBlock(eval);
+          },
           [&](const parser::GotoStmt &s) { markBranchTarget(eval, s.v); },
           [&](const parser::IfStmt &) {
             eval.lexicalSuccessor->isNewBlock = true;
@@ -1163,8 +1165,9 @@ public:
   void dumpModuleLikeUnit(llvm::raw_ostream &outputStream,
                           const lower::pft::ModuleLikeUnit &moduleLikeUnit) {
     outputStream << getNodeIndex(moduleLikeUnit) << " ";
-    outputStream << "ModuleLike: ";
-    outputStream << "\nContains\n";
+    outputStream << "ModuleLike:\n";
+    dumpEvaluationList(outputStream, moduleLikeUnit.evaluationList);
+    outputStream << "Contains\n";
     for (const lower::pft::FunctionLikeUnit &func :
          moduleLikeUnit.nestedFunctions)
       dumpFunctionLikeUnit(outputStream, func);

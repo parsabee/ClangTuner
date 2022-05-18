@@ -271,8 +271,8 @@ void SemanticsContext::CheckIndexVarRedefine(const parser::CharBlock &location,
 
 void SemanticsContext::WarnIndexVarRedefine(
     const parser::CharBlock &location, const Symbol &variable) {
-  CheckIndexVarRedefine(
-      location, variable, "Possible redefinition of %s variable '%s'"_en_US);
+  CheckIndexVarRedefine(location, variable,
+      "Possible redefinition of %s variable '%s'"_warn_en_US);
 }
 
 void SemanticsContext::CheckIndexVarRedefine(
@@ -353,6 +353,10 @@ void SemanticsContext::UseFortranBuiltinsModule() {
       intrinsics_.SupplyBuiltins(*builtinsScope_);
     }
   }
+}
+
+parser::Program &SemanticsContext::SaveParseTree(parser::Program &&tree) {
+  return modFileParseTrees_.emplace_back(std::move(tree));
 }
 
 bool Semantics::Perform() {

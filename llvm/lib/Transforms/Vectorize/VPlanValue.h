@@ -106,6 +106,7 @@ public:
     VPVFirstOrderRecurrencePHISC,
     VPVWidenPHISC,
     VPVWidenIntOrFpInductionSC,
+    VPVWidenPointerInductionSC,
     VPVPredInstPHI,
     VPVReductionPHISC,
   };
@@ -332,6 +333,7 @@ public:
     VPInterleaveSC,
     VPReductionSC,
     VPReplicateSC,
+    VPScalarIVStepsSC,
     VPWidenCallSC,
     VPWidenCanonicalIVSC,
     VPWidenGEPSC,
@@ -345,6 +347,7 @@ public:
     VPFirstOrderRecurrencePHISC,
     VPWidenPHISC,
     VPWidenIntOrFpInductionSC,
+    VPWidenPointerInductionSC,
     VPPredInstPHISC,
     VPReductionPHISC,
     VPFirstPHISC = VPBlendSC,
