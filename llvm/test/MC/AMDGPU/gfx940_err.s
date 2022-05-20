@@ -57,3 +57,36 @@ buffer_wbl2 glc
 
 buffer_wbl2 scc
 // GFX940: error: invalid operand for instruction
+
+v_dot2_u32_u16 v0, 1, v0, s2 op_sel:[0,1,0,1] op_sel_hi:[0,0,1,1]
+// GFX940: error: invalid op_sel operand
+
+s_getreg_b32 s1, hwreg(HW_REG_FLAT_SCR_LO)
+// GFX940: error: specified hardware register is not supported on this GPU
+
+s_getreg_b32 s1, hwreg(HW_REG_FLAT_SCR_HI)
+// GFX940: error: specified hardware register is not supported on this GPU
+
+s_getreg_b32 s1, hwreg(HW_REG_XNACK_MASK)
+// GFX940: error: specified hardware register is not supported on this GPU
+
+s_getreg_b32 s1, hwreg(HW_REG_HW_ID1)
+// GFX940: error: specified hardware register is not supported on this GPU
+
+s_getreg_b32 s1, hwreg(HW_REG_HW_ID2)
+// GFX940: error: specified hardware register is not supported on this GPU
+
+s_getreg_b32 s1, hwreg(HW_REG_POPS_PACKER)
+// GFX940: error: specified hardware register is not supported on this GPU
+
+ds_ordered_count v5, v1 offset:65535 gds
+// GFX940: error: instruction not supported on this GPU
+
+exp pos0 v3, v2, v1, v0
+// GFX940: error: instruction not supported on this GPU
+
+global_load_dword v[2:3], off lds
+// GFX940: error: operands are not valid for this GPU or mode
+
+scratch_load_dword v2, off lds
+// GFX940: error: operands are not valid for this GPU or mode
