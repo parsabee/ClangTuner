@@ -1619,8 +1619,7 @@ Instruction *InstCombinerImpl::foldSelectInstWithICmp(SelectInst &SI,
       ICI->hasOneUse()) {
     InstCombiner::BuilderTy::InsertPointGuard Guard(Builder);
     Builder.SetInsertPoint(&SI);
-    Value *IsNeg = Builder.CreateICmpSLT(
-        CmpLHS, ConstantInt::getNullValue(CmpLHS->getType()), ICI->getName());
+    Value *IsNeg = Builder.CreateIsNeg(CmpLHS, ICI->getName());
     replaceOperand(SI, 0, IsNeg);
     SI.swapValues();
     SI.swapProfMetadata();
@@ -2277,7 +2276,8 @@ static Instruction *foldSelectToCopysign(SelectInst &Sel,
   // Match select ?, TC, FC where the constants are equal but negated.
   // TODO: Generalize to handle a negated variable operand?
   const APFloat *TC, *FC;
-  if (!match(TVal, m_APFloat(TC)) || !match(FVal, m_APFloat(FC)) ||
+  if (!match(TVal, m_APFloatAllowUndef(TC)) ||
+      !match(FVal, m_APFloatAllowUndef(FC)) ||
       !abs(*TC).bitwiseIsEqual(abs(*FC)))
     return nullptr;
 
@@ -2303,7 +2303,7 @@ static Instruction *foldSelectToCopysign(SelectInst &Sel,
 
   // Canonicalize the magnitude argument as the positive constant since we do
   // not care about its sign.
-  Value *MagArg = TC->isNegative() ? FVal : TVal;
+  Value *MagArg = ConstantFP::get(SelType, abs(*TC));
   Function *F = Intrinsic::getDeclaration(Sel.getModule(), Intrinsic::copysign,
                                           Sel.getType());
   return CallInst::Create(F, { MagArg, X });
@@ -2644,22 +2644,6 @@ Instruction *InstCombinerImpl::visitSelectInst(SelectInst &SI) {
   Value *FalseVal = SI.getFalseValue();
   Type *SelType = SI.getType();
 
-  // FIXME: Remove this workaround when freeze related patches are done.
-  // For select with undef operand which feeds into an equality comparison,
-  // don't simplify it so loop unswitch can know the equality comparison
-  // may have an undef operand. This is a workaround for PR31652 caused by
-  // descrepancy about branch on undef between LoopUnswitch and GVN.
-  if (match(TrueVal, m_Undef()) || match(FalseVal, m_Undef())) {
-    if (llvm::any_of(SI.users(), [&](User *U) {
-          ICmpInst *CI = dyn_cast<ICmpInst>(U);
-          if (CI && CI->isEquality())
-            return true;
-          return false;
-        })) {
-      return nullptr;
-    }
-  }
-
   if (Value *V = SimplifySelectInst(CondVal, TrueVal, FalseVal,
                                     SQ.getWithInstruction(&SI)))
     return replaceInstUsesWith(SI, V);
@@ -2804,6 +2788,12 @@ Instruction *InstCombinerImpl::visitSelectInst(SelectInst &SI) {
             return replaceInstUsesWith(SI, V);
 
           if (auto *V = foldEqOfParts(ICmp0, ICmp1, IsAnd))
+            return replaceInstUsesWith(SI, V);
+
+          // This pattern would usually be converted into a bitwise and/or based
+          // on "implies poison" reasoning. However, this may fail if adds with
+          // nowrap flags are involved.
+          if (auto *V = foldAndOrOfICmpsUsingRanges(ICmp0, ICmp1, IsAnd))
             return replaceInstUsesWith(SI, V);
         }
       }

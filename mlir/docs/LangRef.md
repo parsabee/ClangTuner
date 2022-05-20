@@ -95,8 +95,7 @@ func.func @mul(%A: tensor<100x?xf32>, %B: tensor<?x50xf32>) -> (tensor<100x50xf3
   memref.dealloc %C_m : memref<100x50xf32>
 
   // Call TensorFlow built-in function to print the result tensor.
-  "tf.Print"(%C){message: "mul result"}
-                  : (tensor<100x50xf32) -> (tensor<100x50xf32>)
+  "tf.Print"(%C){message: "mul result"} : (tensor<100x50xf32>) -> (tensor<100x50xf32>)
 
   return %C : tensor<100x50xf32>
 }
@@ -152,7 +151,7 @@ literal     ::= `abcd` // Matches the literal `abcd`.
 
 Code examples are presented in blue boxes.
 
-```mlir
+```
 // This is an example use of the grammar above:
 // This matches things like: ba, bana, boma, banana, banoma, bomana...
 example ::= `b` (`an` | `om`)* `a`
@@ -201,6 +200,7 @@ Syntax:
 bare-id ::= (letter|[_]) (letter|digit|[_$.])*
 bare-id-list ::= bare-id (`,` bare-id)*
 value-id ::= `%` suffix-id
+alias-name :: = bare-id
 suffix-id ::= (digit+ | ((letter|id-punct) (letter|id-punct|digit)*))
 
 symbol-ref-id ::= `@` (suffix-id | string-literal) (`::` symbol-ref-id)?
@@ -295,7 +295,7 @@ custom-operation     ::= bare-id custom-operation-format
 op-result-list       ::= op-result (`,` op-result)* `=`
 op-result            ::= value-id (`:` integer-literal)
 successor-list       ::= `[` successor (`,` successor)* `]`
-successor            ::= caret-id (`:` bb-arg-list)?
+successor            ::= caret-id (`:` block-arg-list)?
 region-list          ::= `(` region (`,` region)* `)`
 dictionary-attribute ::= `{` (attribute-entry (`,` attribute-entry)*)? `}`
 trailing-location    ::= (`loc` `(` location `)`)?
@@ -645,15 +645,18 @@ type-list-parens ::= `(` `)`
 
 // This is a common way to refer to a value with a specified type.
 ssa-use-and-type ::= ssa-use `:` type
+ssa-use ::= value-use
 
 // Non-empty list of names and types.
 ssa-use-and-type-list ::= ssa-use-and-type (`,` ssa-use-and-type)*
+
+function-type ::= (type | type-list-parens) `->` (type | type-list-parens)
 ```
 
 ### Type Aliases
 
 ```
-type-alias-def ::= '!' alias-name '=' 'type' type
+type-alias-def ::= '!' alias-name '=' type
 type-alias ::= '!' alias-name
 ```
 
@@ -665,7 +668,7 @@ names are reserved for [dialect types](#dialect-types).
 Example:
 
 ```mlir
-!avx_m128 = type vector<4 x f32>
+!avx_m128 = vector<4 x f32>
 
 // Using the original type.
 "foo"(%x) : vector<4 x f32> -> ()
@@ -693,10 +696,9 @@ pretty-dialect-item-contents ::= pretty-dialect-item-body
                               | '(' pretty-dialect-item-contents+ ')'
                               | '[' pretty-dialect-item-contents+ ']'
                               | '{' pretty-dialect-item-contents+ '}'
-                              | '[^[<({>\])}\0]+'
+                              | '[^\[<({\]>)}\0]+'
 
-dialect-type ::= '!' opaque-dialect-item
-dialect-type ::= '!' pretty-dialect-item
+dialect-type ::= '!' (opaque-dialect-item | pretty-dialect-item)
 ```
 
 Dialect types can be specified in a verbose form, e.g. like this:

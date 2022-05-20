@@ -902,9 +902,11 @@ MachineInstrBuilder MLocTracker::emitLoc(Optional<LocIdx> MLoc,
 
       if (Properties.Indirect) {
         // This is something like an NRVO variable, where the pointer has been
-        // spilt to the stack. It should end up being a memory location, with
-        // the pointer to the variable loaded off the stack with a deref:
-        assert(!Expr->isComplex());
+        // spilt to the stack, or a dbg.addr pointing at a coroutine frame
+        // field. It should end up being a memory location, with the pointer
+        // to the variable loaded off the stack with a deref. It can't be a
+        // DW_OP_stack_value expression.
+        assert(!Expr->isImplicit());
         Expr = TRI.prependOffsetExpression(
             Expr, DIExpression::ApplyOffset | DIExpression::DerefAfter,
             Spill.SpillOffset);
