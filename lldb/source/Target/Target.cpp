@@ -185,6 +185,8 @@ void Target::CleanupProcess() {
 
 void Target::DeleteCurrentProcess() {
   if (m_process_sp) {
+    // We dispose any active tracing sessions on the current process
+    m_trace_sp.reset();
     m_section_load_history.Clear();
     if (m_process_sp->IsAlive())
       m_process_sp->Destroy(false);
@@ -285,6 +287,17 @@ void Target::Destroy() {
   m_stop_hooks.clear();
   m_stop_hook_next_id = 0;
   m_suppress_stop_hooks = false;
+}
+
+llvm::StringRef Target::GetABIName() const {
+  lldb::ABISP abi_sp;
+  if (m_process_sp)
+    abi_sp = m_process_sp->GetABI();
+  if (!abi_sp)
+    abi_sp = ABI::FindPlugin(ProcessSP(), GetArchitecture());
+  if (abi_sp)
+      return abi_sp->GetPluginName();
+  return {};
 }
 
 BreakpointList &Target::GetBreakpointList(bool internal) {
@@ -1470,11 +1483,11 @@ bool Target::SetArchitecture(const ArchSpec &arch_spec, bool set_platform) {
     if (other.IsValid()) {
       auto platform_sp = GetPlatform();
       if (!platform_sp ||
-          !platform_sp->IsCompatibleArchitecture(other, false, nullptr)) {
+          !platform_sp->IsCompatibleArchitecture(other, {}, false, nullptr)) {
         ArchSpec platform_arch;
-        auto arch_platform_sp =
-            Platform::GetPlatformForArchitecture(other, &platform_arch);
-        if (arch_platform_sp) {
+        if (PlatformSP arch_platform_sp =
+                GetDebugger().GetPlatformList().GetOrCreate(other, {},
+                                                            &platform_arch)) {
           SetPlatform(arch_platform_sp);
           if (platform_arch.IsValid())
             other = platform_arch;
@@ -1719,6 +1732,12 @@ size_t Target::ReadMemory(const Address &addr, void *dst, size_t dst_len,
                           lldb::addr_t *load_addr_ptr) {
   error.Clear();
 
+  Address fixed_addr = addr;
+  if (ProcessIsValid())
+    if (const ABISP &abi = m_process_sp->GetABI())
+      fixed_addr.SetLoadAddress(abi->FixAnyAddress(addr.GetLoadAddress(this)),
+                                this);
+
   // if we end up reading this from process memory, we will fill this with the
   // actual load address
   if (load_addr_ptr)
@@ -1729,26 +1748,28 @@ size_t Target::ReadMemory(const Address &addr, void *dst, size_t dst_len,
   addr_t load_addr = LLDB_INVALID_ADDRESS;
   addr_t file_addr = LLDB_INVALID_ADDRESS;
   Address resolved_addr;
-  if (!addr.IsSectionOffset()) {
+  if (!fixed_addr.IsSectionOffset()) {
     SectionLoadList &section_load_list = GetSectionLoadList();
     if (section_load_list.IsEmpty()) {
       // No sections are loaded, so we must assume we are not running yet and
       // anything we are given is a file address.
-      file_addr = addr.GetOffset(); // "addr" doesn't have a section, so its
-                                    // offset is the file address
+      file_addr =
+          fixed_addr.GetOffset(); // "fixed_addr" doesn't have a section, so
+                                  // its offset is the file address
       m_images.ResolveFileAddress(file_addr, resolved_addr);
     } else {
       // We have at least one section loaded. This can be because we have
       // manually loaded some sections with "target modules load ..." or
       // because we have have a live process that has sections loaded through
       // the dynamic loader
-      load_addr = addr.GetOffset(); // "addr" doesn't have a section, so its
-                                    // offset is the load address
+      load_addr =
+          fixed_addr.GetOffset(); // "fixed_addr" doesn't have a section, so
+                                  // its offset is the load address
       section_load_list.ResolveLoadAddress(load_addr, resolved_addr);
     }
   }
   if (!resolved_addr.IsValid())
-    resolved_addr = addr;
+    resolved_addr = fixed_addr;
 
   // If we read from the file cache but can't get as many bytes as requested,
   // we keep the result around in this buffer, in case this result is the
@@ -4173,8 +4194,10 @@ FileSpec TargetProperties::GetSaveJITObjectsDir() const {
 }
 
 void TargetProperties::CheckJITObjectsDir() {
-  const uint32_t idx = ePropertySaveObjectsDir;
   FileSpec new_dir = GetSaveJITObjectsDir();
+  if (!new_dir)
+    return;
+
   const FileSystem &instance = FileSystem::Instance();
   bool exists = instance.Exists(new_dir);
   bool is_directory = instance.IsDirectory(new_dir);
@@ -4182,26 +4205,25 @@ void TargetProperties::CheckJITObjectsDir() {
   bool writable = llvm::sys::fs::can_write(path);
   if (exists && is_directory && writable)
     return;
-  m_collection_sp->GetPropertyAtIndex(nullptr, true, idx)->GetValue()
+
+  m_collection_sp->GetPropertyAtIndex(nullptr, true, ePropertySaveObjectsDir)
+      ->GetValue()
       ->Clear();
-  StreamSP error_strm_sp;
-  if (m_target) {
-    // FIXME: How can I warn the user when setting this on the Debugger?
-    error_strm_sp = m_target->GetDebugger().GetAsyncErrorStream();
-  } else if (Debugger::GetNumDebuggers() == 1) {
-    error_strm_sp = Debugger::GetDebuggerAtIndex(0)->GetAsyncErrorStream();
-  }
-  if (error_strm_sp) {
-    error_strm_sp->Format("JIT object dir '{0}' ", path);
-    if (!exists)
-      error_strm_sp->PutCString("does not exist.");
-    else if (!is_directory)
-      error_strm_sp->PutCString("is not a directory.");
-    else if (!writable)
-      error_strm_sp->PutCString("is not writable.");
-    error_strm_sp->EOL();
-    error_strm_sp->Flush();
-  }
+
+  std::string buffer;
+  llvm::raw_string_ostream os(buffer);
+  os << "JIT object dir '" << path << "' ";
+  if (!exists)
+    os << "does not exist";
+  else if (!is_directory)
+    os << "is not a directory";
+  else if (!writable)
+    os << "is not writable";
+
+  llvm::Optional<lldb::user_id_t> debugger_id = llvm::None;
+  if (m_target)
+    debugger_id = m_target->GetDebugger().GetID();
+  Debugger::ReportError(os.str(), debugger_id);
 }
 
 bool TargetProperties::GetEnableSyntheticValue() const {
@@ -4220,6 +4242,15 @@ uint32_t TargetProperties::GetMaximumNumberOfChildrenToDisplay() const {
   const uint32_t idx = ePropertyMaxChildrenCount;
   return m_collection_sp->GetPropertyAtIndexAsSInt64(
       nullptr, idx, g_target_properties[idx].default_uint_value);
+}
+
+std::pair<uint32_t, bool>
+TargetProperties::GetMaximumDepthOfChildrenToDisplay() const {
+  const uint32_t idx = ePropertyMaxChildrenDepth;
+  auto *option_value =
+      m_collection_sp->GetPropertyAtIndexAsOptionValueUInt64(nullptr, idx);
+  bool is_default = !option_value->OptionWasSet();
+  return {option_value->GetCurrentValue(), is_default};
 }
 
 uint32_t TargetProperties::GetMaximumSizeOfStringSummary() const {

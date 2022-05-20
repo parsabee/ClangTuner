@@ -336,6 +336,21 @@ GenerateHeaderModuleAction::CreateOutputFile(CompilerInstance &CI,
   return CI.createDefaultOutputFile(/*Binary=*/true, InFile, "pcm");
 }
 
+bool GenerateHeaderUnitAction::BeginSourceFileAction(CompilerInstance &CI) {
+  if (!CI.getLangOpts().CPlusPlusModules) {
+    CI.getDiagnostics().Report(diag::err_module_interface_requires_cpp_modules);
+    return false;
+  }
+  CI.getLangOpts().setCompilingModule(LangOptions::CMK_HeaderUnit);
+  return GenerateModuleAction::BeginSourceFileAction(CI);
+}
+
+std::unique_ptr<raw_pwrite_stream>
+GenerateHeaderUnitAction::CreateOutputFile(CompilerInstance &CI,
+                                           StringRef InFile) {
+  return CI.createDefaultOutputFile(/*Binary=*/true, InFile, "pcm");
+}
+
 SyntaxOnlyAction::~SyntaxOnlyAction() {
 }
 
@@ -465,6 +480,8 @@ private:
       return "InitializingStructuredBinding";
     case CodeSynthesisContext::MarkingClassDllexported:
       return "MarkingClassDllexported";
+    case CodeSynthesisContext::BuildingBuiltinDumpStructCall:
+      return "BuildingBuiltinDumpStructCall";
     }
     return "";
   }
@@ -818,6 +835,8 @@ static StringRef ModuleKindName(Module::ModuleKind MK) {
     return "Partition Interface";
   case Module::ModulePartitionImplementation:
     return "Partition Implementation";
+  case Module::ModuleHeaderUnit:
+    return "Header Unit";
   case Module::GlobalModuleFragment:
     return "Global Module Fragment";
   case Module::PrivateModuleFragment:
@@ -1061,6 +1080,7 @@ void PrintPreambleAction::ExecuteAction() {
   case Language::OpenCLCXX:
   case Language::CUDA:
   case Language::HIP:
+  case Language::HLSL:
     break;
 
   case Language::Unknown:
