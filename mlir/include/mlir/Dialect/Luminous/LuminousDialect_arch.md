@@ -13,7 +13,7 @@ Note that the linalg ops must be bufferized before this pass, otherwise tiling w
 
 Simple elementwise add of two tensors
 
-```asm
+```mlir
 #map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 module attributes {tf.versions = {bad_consumers = [], min_consumer = 0 : i32, producer = 808 : i32}}  {
   func @main(%arg0: tensor<64x128x1024xf32>, %arg1: tensor<64x128x1024xf32>) -> tensor<64x128x1024xf32> attributes {tf.entry_function = {control_outputs = "", inputs = "args_0,args_0_1", outputs = "Identity"}} {
@@ -55,7 +55,7 @@ module attributes {tf.versions = {bad_consumers = [], min_consumer = 0 : i32, pr
 
 After memory footprint reduction
 
-```asm
+```mlir
 #map0 = affine_map<(d0, d1, d2)[s0] -> (d0 * 131072 + s0 + d1 * 1024 + d2)>
 #map1 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 module attributes {tf.versions = {bad_consumers = [], min_consumer = 0 : i32, producer = 808 : i32}} {
@@ -162,7 +162,7 @@ terminator(`luminous.yield`), the body of the parallel op stays unchanged.
 
 Lowering the example above, (after tiling)
 
-```asm
+```mlir
 #map0 = affine_map<(d0, d1, d2)[s0] -> (d0 * 131072 + s0 + d1 * 1024 + d2)>
 #map1 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 module attributes {tf.versions = {bad_consumers = [], min_consumer = 0 : i32, producer = 808 : i32}} {
@@ -214,7 +214,7 @@ kernel. Then inserts an await call on the future returned by the async dispatch 
 
 Outlining kernels for example above
 
-```asm
+```mlir
 #map0 = affine_map<(d0, d1, d2)[s0] -> (d0 * 131072 + s0 + d1 * 1024 + d2)>
 #map1 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 module attributes {luminous.container_module, tf.versions = {bad_consumers = [], min_consumer = 0 : i32, producer = 808 : i32}} {
