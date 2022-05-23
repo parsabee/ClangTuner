@@ -347,10 +347,14 @@ Attribute Importer::getConstantAsAttr(llvm::Constant *value) {
     if (c->isString())
       return b.getStringAttr(c->getAsString());
   if (auto *c = dyn_cast<llvm::ConstantFP>(value)) {
-    if (c->getType()->isDoubleTy())
-      return b.getFloatAttr(FloatType::getF64(context), c->getValueAPF());
-    if (c->getType()->isFloatingPointTy())
-      return b.getFloatAttr(FloatType::getF32(context), c->getValueAPF());
+    auto *type = c->getType();
+    FloatType floatTy;
+    if (type->isBFloatTy())
+      floatTy = FloatType::getBF16(context);
+    else
+      floatTy = getDLFloatType(*context, type->getScalarSizeInBits());
+    assert(floatTy && "unsupported floating point type");
+    return b.getFloatAttr(floatTy, c->getValueAPF());
   }
   if (auto *f = dyn_cast<llvm::Function>(value))
     return SymbolRefAttr::get(b.getContext(), f->getName());
@@ -579,7 +583,7 @@ static StringRef lookupOperationNameFromOpcode(unsigned opcode) {
   static const DenseMap<unsigned, StringRef> opcMap = {
       // Ret is handled specially.
       // Br is handled specially.
-      // FIXME: switch
+      // Switch is handled specially.
       // FIXME: indirectbr
       // FIXME: invoke
       INST(Resume, Resume),
@@ -607,16 +611,15 @@ static StringRef lookupOperationNameFromOpcode(unsigned opcode) {
       // FIXME: cleanuppad
       // FIXME: catchpad
       // ICmp is handled specially.
-      // FIXME: fcmp
+      // FCmp is handled specially.
       // PHI is handled specially.
       INST(Freeze, Freeze), INST(Call, Call),
       // FIXME: select
       // FIXME: vaarg
-      // FIXME: extractelement
-      // FIXME: insertelement
-      // FIXME: shufflevector
-      // FIXME: extractvalue
-      // FIXME: insertvalue
+      INST(ExtractElement, ExtractElement), INST(InsertElement, InsertElement),
+      // ShuffleVector is handled specially.
+      // InsertValue is handled specially.
+      // ExtractValue is handled specially.
       // FIXME: landingpad
   };
 #undef INST
@@ -649,7 +652,47 @@ static ICmpPredicate getICmpPredicate(llvm::CmpInst::Predicate p) {
   case llvm::CmpInst::Predicate::ICMP_UGE:
     return LLVM::ICmpPredicate::uge;
   }
-  llvm_unreachable("incorrect comparison predicate");
+  llvm_unreachable("incorrect integer comparison predicate");
+}
+
+static FCmpPredicate getFCmpPredicate(llvm::CmpInst::Predicate p) {
+  switch (p) {
+  default:
+    llvm_unreachable("incorrect comparison predicate");
+  case llvm::CmpInst::Predicate::FCMP_FALSE:
+    return LLVM::FCmpPredicate::_false;
+  case llvm::CmpInst::Predicate::FCMP_TRUE:
+    return LLVM::FCmpPredicate::_true;
+  case llvm::CmpInst::Predicate::FCMP_OEQ:
+    return LLVM::FCmpPredicate::oeq;
+  case llvm::CmpInst::Predicate::FCMP_ONE:
+    return LLVM::FCmpPredicate::one;
+  case llvm::CmpInst::Predicate::FCMP_OLT:
+    return LLVM::FCmpPredicate::olt;
+  case llvm::CmpInst::Predicate::FCMP_OLE:
+    return LLVM::FCmpPredicate::ole;
+  case llvm::CmpInst::Predicate::FCMP_OGT:
+    return LLVM::FCmpPredicate::ogt;
+  case llvm::CmpInst::Predicate::FCMP_OGE:
+    return LLVM::FCmpPredicate::oge;
+  case llvm::CmpInst::Predicate::FCMP_ORD:
+    return LLVM::FCmpPredicate::ord;
+  case llvm::CmpInst::Predicate::FCMP_ULT:
+    return LLVM::FCmpPredicate::ult;
+  case llvm::CmpInst::Predicate::FCMP_ULE:
+    return LLVM::FCmpPredicate::ule;
+  case llvm::CmpInst::Predicate::FCMP_UGT:
+    return LLVM::FCmpPredicate::ugt;
+  case llvm::CmpInst::Predicate::FCMP_UGE:
+    return LLVM::FCmpPredicate::uge;
+  case llvm::CmpInst::Predicate::FCMP_UNO:
+    return LLVM::FCmpPredicate::uno;
+  case llvm::CmpInst::Predicate::FCMP_UEQ:
+    return LLVM::FCmpPredicate::ueq;
+  case llvm::CmpInst::Predicate::FCMP_UNE:
+    return LLVM::FCmpPredicate::une;
+  }
+  llvm_unreachable("incorrect floating point comparison predicate");
 }
 
 static AtomicOrdering getLLVMAtomicOrdering(llvm::AtomicOrdering ordering) {
@@ -691,8 +734,8 @@ LogicalResult Importer::processInstruction(llvm::Instruction *inst) {
   // FIXME: Support uses of SubtargetData. Currently inbounds GEPs, fast-math
   // flags and call / operand attributes are not supported.
   Location loc = processDebugLoc(inst->getDebugLoc(), inst);
-  Value &v = instMap[inst];
-  assert(!v && "processInstruction must be called only once per instruction!");
+  assert(!instMap.count(inst) &&
+         "processInstruction must be called only once per instruction!");
   switch (inst->getOpcode()) {
   default:
     return emitError(loc) << "unknown instruction: " << diag(*inst);
@@ -731,7 +774,9 @@ LogicalResult Importer::processInstruction(llvm::Instruction *inst) {
   case llvm::Instruction::IntToPtr:
   case llvm::Instruction::AddrSpaceCast:
   case llvm::Instruction::Freeze:
-  case llvm::Instruction::BitCast: {
+  case llvm::Instruction::BitCast:
+  case llvm::Instruction::ExtractElement:
+  case llvm::Instruction::InsertElement: {
     OperationState state(loc, lookupOperationNameFromOpcode(inst->getOpcode()));
     SmallVector<Value, 4> ops;
     ops.reserve(inst->getNumOperands());
@@ -750,7 +795,7 @@ LogicalResult Importer::processInstruction(llvm::Instruction *inst) {
     }
     Operation *op = b.create(state);
     if (!inst->getType()->isVoidTy())
-      v = op->getResult(0);
+      instMap[inst] = op->getResult(0);
     return success();
   }
   case llvm::Instruction::Alloca: {
@@ -759,7 +804,8 @@ LogicalResult Importer::processInstruction(llvm::Instruction *inst) {
       return failure();
 
     auto *allocaInst = cast<llvm::AllocaInst>(inst);
-    v = b.create<AllocaOp>(loc, processType(inst->getType()),
+    instMap[inst] =
+        b.create<AllocaOp>(loc, processType(inst->getType()),
                            processType(allocaInst->getAllocatedType()), size,
                            allocaInst->getAlign().value());
     return success();
@@ -769,9 +815,19 @@ LogicalResult Importer::processInstruction(llvm::Instruction *inst) {
     Value rhs = processValue(inst->getOperand(1));
     if (!lhs || !rhs)
       return failure();
-    v = b.create<ICmpOp>(
+    instMap[inst] = b.create<ICmpOp>(
         loc, getICmpPredicate(cast<llvm::ICmpInst>(inst)->getPredicate()), lhs,
         rhs);
+    return success();
+  }
+  case llvm::Instruction::FCmp: {
+    Value lhs = processValue(inst->getOperand(0));
+    Value rhs = processValue(inst->getOperand(1));
+    if (!lhs || !rhs)
+      return failure();
+    instMap[inst] = b.create<FCmpOp>(
+        loc, b.getI1Type(),
+        getFCmpPredicate(cast<llvm::FCmpInst>(inst)->getPredicate()), lhs, rhs);
     return success();
   }
   case llvm::Instruction::Br: {
@@ -804,11 +860,45 @@ LogicalResult Importer::processInstruction(llvm::Instruction *inst) {
     b.create(state);
     return success();
   }
+  case llvm::Instruction::Switch: {
+    auto *swInst = cast<llvm::SwitchInst>(inst);
+    // Process the condition value.
+    Value condition = processValue(swInst->getCondition());
+    if (!condition)
+      return failure();
+
+    SmallVector<Value> defaultBlockArgs;
+    // Process the default case.
+    llvm::BasicBlock *defaultBB = swInst->getDefaultDest();
+    if (failed(processBranchArgs(swInst, defaultBB, defaultBlockArgs)))
+      return failure();
+
+    // Process the cases.
+    unsigned numCases = swInst->getNumCases();
+    SmallVector<SmallVector<Value>> caseOperands(numCases);
+    SmallVector<ValueRange> caseOperandRefs(numCases);
+    SmallVector<int32_t> caseValues(numCases);
+    SmallVector<Block *> caseBlocks(numCases);
+    for (const auto &en : llvm::enumerate(swInst->cases())) {
+      const llvm::SwitchInst::CaseHandle &caseHandle = en.value();
+      unsigned i = en.index();
+      llvm::BasicBlock *succBB = caseHandle.getCaseSuccessor();
+      if (failed(processBranchArgs(swInst, succBB, caseOperands[i])))
+        return failure();
+      caseOperandRefs[i] = caseOperands[i];
+      caseValues[i] = caseHandle.getCaseValue()->getSExtValue();
+      caseBlocks[i] = blocks[succBB];
+    }
+
+    b.create<SwitchOp>(loc, condition, blocks[defaultBB], defaultBlockArgs,
+                       caseValues, caseBlocks, caseOperandRefs);
+    return success();
+  }
   case llvm::Instruction::PHI: {
     Type type = processType(inst->getType());
     if (!type)
       return failure();
-    v = b.getInsertionBlock()->addArgument(
+    instMap[inst] = b.getInsertionBlock()->addArgument(
         type, processDebugLoc(inst->getDebugLoc(), inst));
     return success();
   }
@@ -842,7 +932,7 @@ LogicalResult Importer::processInstruction(llvm::Instruction *inst) {
       op = b.create<CallOp>(loc, tys, ops);
     }
     if (!ci->getType()->isVoidTy())
-      v = op->getResult(0);
+      instMap[inst] = op->getResult(0);
     return success();
   }
   case llvm::Instruction::LandingPad: {
@@ -856,7 +946,7 @@ LogicalResult Importer::processInstruction(llvm::Instruction *inst) {
     if (!ty)
       return failure();
 
-    v = b.create<LandingpadOp>(loc, ty, lpi->isCleanup(), ops);
+    instMap[inst] = b.create<LandingpadOp>(loc, ty, lpi->isCleanup(), ops);
     return success();
   }
   case llvm::Instruction::Invoke: {
@@ -889,7 +979,7 @@ LogicalResult Importer::processInstruction(llvm::Instruction *inst) {
     }
 
     if (!ii->getType()->isVoidTy())
-      v = op->getResult(0);
+      instMap[inst] = op->getResult(0);
     return success();
   }
   case llvm::Instruction::Fence: {
@@ -913,33 +1003,75 @@ LogicalResult Importer::processInstruction(llvm::Instruction *inst) {
     // FIXME: Support inbounds GEPs.
     llvm::GetElementPtrInst *gep = cast<llvm::GetElementPtrInst>(inst);
     Value basePtr = processValue(gep->getOperand(0));
-    SmallVector<int32_t> staticIndices;
-    SmallVector<Value> dynamicIndices;
     Type sourceElementType = processType(gep->getSourceElementType());
-    SmallVector<unsigned> staticIndexPositions;
-    GEPOp::findKnownStructIndices(sourceElementType, staticIndexPositions);
 
-    for (const auto &en :
-         llvm::enumerate(llvm::drop_begin(gep->operand_values()))) {
-      llvm::Value *operand = en.value();
-      if (llvm::find(staticIndexPositions, en.index()) ==
-          staticIndexPositions.end()) {
-        staticIndices.push_back(GEPOp::kDynamicIndex);
-        dynamicIndices.push_back(processValue(operand));
-        if (!dynamicIndices.back())
-          return failure();
-      } else {
-        auto *constantInt = cast<llvm::ConstantInt>(operand);
-        staticIndices.push_back(
-            static_cast<int32_t>(constantInt->getValue().getZExtValue()));
-      }
+    SmallVector<Value> indices;
+    for (llvm::Value *operand : llvm::drop_begin(gep->operand_values())) {
+      indices.push_back(processValue(operand));
+      if (!indices.back())
+        return failure();
     }
+    // Treat every indices as dynamic since GEPOp::build will refine those
+    // indices into static attributes later. One small downside of this
+    // approach is that many unused `llvm.mlir.constant` would be emitted
+    // at first place.
+    SmallVector<int32_t> structIndices(indices.size(),
+                                       LLVM::GEPOp::kDynamicIndex);
 
     Type type = processType(inst->getType());
     if (!type)
       return failure();
-    v = b.create<GEPOp>(loc, type, sourceElementType, basePtr, dynamicIndices,
-                        staticIndices);
+    instMap[inst] = b.create<GEPOp>(loc, type, sourceElementType, basePtr,
+                                    indices, structIndices);
+    return success();
+  }
+  case llvm::Instruction::InsertValue: {
+    auto *ivInst = cast<llvm::InsertValueInst>(inst);
+    Value inserted = processValue(ivInst->getInsertedValueOperand());
+    if (!inserted)
+      return failure();
+    Value aggOperand = processValue(ivInst->getAggregateOperand());
+    if (!aggOperand)
+      return failure();
+
+    SmallVector<int32_t> idxValues;
+    for (unsigned idx : ivInst->getIndices())
+      idxValues.push_back(static_cast<int32_t>(idx));
+    ArrayAttr indices = b.getI32ArrayAttr(idxValues);
+
+    instMap[inst] = b.create<InsertValueOp>(loc, aggOperand, inserted, indices);
+    return success();
+  }
+  case llvm::Instruction::ExtractValue: {
+    auto *evInst = cast<llvm::ExtractValueInst>(inst);
+    Value aggOperand = processValue(evInst->getAggregateOperand());
+    if (!aggOperand)
+      return failure();
+
+    Type type = processType(inst->getType());
+    if (!type)
+      return failure();
+
+    SmallVector<int32_t> idxValues;
+    for (unsigned idx : evInst->getIndices())
+      idxValues.push_back(static_cast<int32_t>(idx));
+    ArrayAttr indices = b.getI32ArrayAttr(idxValues);
+
+    instMap[inst] = b.create<ExtractValueOp>(loc, type, aggOperand, indices);
+    return success();
+  }
+  case llvm::Instruction::ShuffleVector: {
+    auto *svInst = cast<llvm::ShuffleVectorInst>(inst);
+    Value vec1 = processValue(svInst->getOperand(0));
+    if (!vec1)
+      return failure();
+    Value vec2 = processValue(svInst->getOperand(1));
+    if (!vec2)
+      return failure();
+
+    ArrayAttr mask = b.getI32ArrayAttr(svInst->getShuffleMask());
+
+    instMap[inst] = b.create<ShuffleVectorOp>(loc, vec1, vec2, mask);
     return success();
   }
   }

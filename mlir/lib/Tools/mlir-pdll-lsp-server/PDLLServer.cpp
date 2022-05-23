@@ -916,7 +916,7 @@ public:
     // Functor used to add a single include completion item.
     auto addIncludeCompletion = [&](StringRef path, bool isDirectory) {
       lsp::CompletionItem item;
-      item.label = (path + (isDirectory ? "/" : "")).str();
+      item.label = path.str();
       item.kind = isDirectory ? lsp::CompletionItemKind::Folder
                               : lsp::CompletionItemKind::File;
       if (seenResults.insert(item.label).second)
@@ -982,9 +982,6 @@ PDLDocument::getCodeCompletion(const lsp::URIForFile &uri,
   SMLoc posLoc = completePos.getAsSMLoc(sourceMgr);
   if (!posLoc.isValid())
     return lsp::CompletionList();
-
-  // Adjust the position one further to after the completion trigger token.
-  posLoc = SMLoc::getFromPointer(posLoc.getPointer() + 1);
 
   // To perform code completion, we run another parse of the module with the
   // code completion context provided.
@@ -1131,9 +1128,6 @@ lsp::SignatureHelp PDLDocument::getSignatureHelp(const lsp::URIForFile &uri,
   SMLoc posLoc = helpPos.getAsSMLoc(sourceMgr);
   if (!posLoc.isValid())
     return lsp::SignatureHelp();
-
-  // Adjust the position one further to after the completion trigger token.
-  posLoc = SMLoc::getFromPointer(posLoc.getPointer() + 1);
 
   // To perform code completion, we run another parse of the module with the
   // code completion context provided.

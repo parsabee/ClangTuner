@@ -371,6 +371,11 @@ TestDialect::getParseOperationHook(StringRef opName) const {
       return parser.parseKeyword("custom_format_fallback");
     }};
   }
+  if (opName == "test.dialect_custom_printer.with.dot") {
+    return ParseOpHook{[](OpAsmParser &parser, OperationState &state) {
+      return ParseResult::success();
+    }};
+  }
   return None;
 }
 
@@ -691,18 +696,16 @@ static void printCustomDirectiveOptionalOperandRef(OpAsmPrinter &printer,
 
 ParseResult IsolatedRegionOp::parse(OpAsmParser &parser,
                                     OperationState &result) {
-  OpAsmParser::UnresolvedOperand argInfo;
-  Type argType = parser.getBuilder().getIndexType();
-
   // Parse the input operand.
-  if (parser.parseOperand(argInfo) ||
-      parser.resolveOperand(argInfo, argType, result.operands))
+  OpAsmParser::Argument argInfo;
+  argInfo.type = parser.getBuilder().getIndexType();
+  if (parser.parseOperand(argInfo.ssaName) ||
+      parser.resolveOperand(argInfo.ssaName, argInfo.type, result.operands))
     return failure();
 
   // Parse the body region, and reuse the operand info as the argument info.
   Region *body = result.addRegion();
-  return parser.parseRegion(*body, argInfo, argType,
-                            /*enableNameShadowing=*/true);
+  return parser.parseRegion(*body, argInfo, /*enableNameShadowing=*/true);
 }
 
 void IsolatedRegionOp::print(OpAsmPrinter &p) {
@@ -724,17 +727,6 @@ RegionKind SSACFGRegionOp::getRegionKind(unsigned index) {
 //===----------------------------------------------------------------------===//
 // Test GraphRegionOp
 //===----------------------------------------------------------------------===//
-
-ParseResult GraphRegionOp::parse(OpAsmParser &parser, OperationState &result) {
-  // Parse the body region, and reuse the operand info as the argument info.
-  Region *body = result.addRegion();
-  return parser.parseRegion(*body, /*arguments=*/{}, /*argTypes=*/{});
-}
-
-void GraphRegionOp::print(OpAsmPrinter &p) {
-  p << "test.graph_region ";
-  p.printRegion(getRegion(), /*printEntryBlockArgs=*/false);
-}
 
 RegionKind GraphRegionOp::getRegionKind(unsigned index) {
   return RegionKind::Graph;
@@ -930,16 +922,16 @@ void PrettyPrintedRegionOp::print(OpAsmPrinter &p) {
 //===----------------------------------------------------------------------===//
 
 ParseResult PolyForOp::parse(OpAsmParser &parser, OperationState &result) {
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> ivsInfo;
+  SmallVector<OpAsmParser::Argument, 4> ivsInfo;
   // Parse list of region arguments without a delimiter.
-  if (parser.parseRegionArgumentList(ivsInfo))
+  if (parser.parseArgumentList(ivsInfo, OpAsmParser::Delimiter::None))
     return failure();
 
   // Parse the body region.
   Region *body = result.addRegion();
-  auto &builder = parser.getBuilder();
-  SmallVector<Type, 4> argTypes(ivsInfo.size(), builder.getIndexType());
-  return parser.parseRegion(*body, ivsInfo, argTypes);
+  for (auto &iv : ivsInfo)
+    iv.type = parser.getBuilder().getIndexType();
+  return parser.parseRegion(*body, ivsInfo);
 }
 
 void PolyForOp::print(OpAsmPrinter &p) { p.printGenericOp(*this); }

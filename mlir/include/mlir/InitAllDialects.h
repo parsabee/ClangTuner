@@ -14,6 +14,7 @@
 #ifndef MLIR_INITALLDIALECTS_H_
 #define MLIR_INITALLDIALECTS_H_
 
+#include "mlir/Dialect/AMDGPU/AMDGPUDialect.h"
 #include "mlir/Dialect/AMX/AMXDialect.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
@@ -33,6 +34,7 @@
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/Linalg/TransformOps/LinalgTransformOps.h"
 #include "mlir/Dialect/Linalg/Transforms/BufferizableOpInterfaceImpl.h"
 #include "mlir/Dialect/Luminous/IR/LuminousDialect.h"
 #include "mlir/Dialect/MLProgram/IR/MLProgram.h"
@@ -69,6 +71,7 @@ inline void registerAllDialects(DialectRegistry &registry) {
   registry.insert<acc::OpenACCDialect,
                   AffineDialect,
                   arith::ArithmeticDialect,
+                  amdgpu::AMDGPUDialect,
                   amx::AMXDialect,
                   arm_neon::ArmNeonDialect,
                   async::AsyncDialect,
@@ -103,6 +106,11 @@ inline void registerAllDialects(DialectRegistry &registry) {
                   tosa::TosaDialect,
                   x86vector::X86VectorDialect>();
   // clang-format on
+
+  // Register all dialect extensions.
+  linalg::registerTransformDialectExtension(registry);
+
+  // Register all external models.
   arith::registerBufferizableOpInterfaceExternalModels(registry);
   bufferization::func_ext::registerBufferizableOpInterfaceExternalModels(
       registry);
