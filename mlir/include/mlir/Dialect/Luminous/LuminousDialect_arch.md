@@ -30,7 +30,7 @@ module attributes {tf.versions = {bad_consumers = [], min_consumer = 0 : i32, pr
 
 After bufferization of linalg (`--linalg-bufferize`)
 
-```asm
+```mlir
 #map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 module attributes {tf.versions = {bad_consumers = [], min_consumer = 0 : i32, producer = 808 : i32}} {
   func @main(%arg0: tensor<64x128x1024xf32>, %arg1: tensor<64x128x1024xf32>) -> tensor<64x128x1024xf32> attributes {tf.entry_function = {control_outputs = "", inputs = "args_0,args_0_1", outputs = "Identity"}} {
