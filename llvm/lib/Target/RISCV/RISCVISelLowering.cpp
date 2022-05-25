@@ -6055,11 +6055,11 @@ SDValue RISCVTargetLowering::lowerVPOp(SDValue Op, SelectionDAG &DAG,
   }
 
   if (!VT.isFixedLengthVector())
-    return DAG.getNode(RISCVISDOpc, DL, VT, Ops);
+    return DAG.getNode(RISCVISDOpc, DL, VT, Ops, Op->getFlags());
 
   MVT ContainerVT = getContainerForFixedLengthVector(VT);
 
-  SDValue VPOp = DAG.getNode(RISCVISDOpc, DL, ContainerVT, Ops);
+  SDValue VPOp = DAG.getNode(RISCVISDOpc, DL, ContainerVT, Ops, Op->getFlags());
 
   return convertFromScalableVector(VT, VPOp, DAG, Subtarget);
 }
@@ -11656,7 +11656,8 @@ Value *RISCVTargetLowering::emitMaskedAtomicCmpXchgIntrinsic(
   return Result;
 }
 
-bool RISCVTargetLowering::shouldRemoveExtendFromGSIndex(EVT VT) const {
+bool RISCVTargetLowering::shouldRemoveExtendFromGSIndex(EVT IndexVT,
+                                                        EVT DataVT) const {
   return false;
 }
 

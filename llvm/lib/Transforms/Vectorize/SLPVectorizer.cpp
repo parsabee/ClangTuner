@@ -895,7 +895,10 @@ public:
   /// Construct a vectorizable tree that starts at \p Roots, ignoring users for
   /// the purpose of scheduling and extraction in the \p UserIgnoreLst.
   void buildTree(ArrayRef<Value *> Roots,
-                 ArrayRef<Value *> UserIgnoreLst = None);
+                 const SmallDenseSet<Value *> &UserIgnoreLst);
+
+  /// Construct a vectorizable tree that starts at \p Roots.
+  void buildTree(ArrayRef<Value *> Roots);
 
   /// Builds external uses of the vectorized scalars, i.e. the list of
   /// vectorized scalars to be extracted, their lanes and their scalar users. \p
@@ -916,6 +919,7 @@ public:
     }
     MinBWs.clear();
     InstrElementSize.clear();
+    UserIgnoreList = nullptr;
   }
 
   unsigned getTreeSize() const { return VectorizableTree.size(); }
@@ -2073,8 +2077,8 @@ public:
     AnalyzedReductionVals.clear();
   }
   /// Checks if the given value is gathered in one of the nodes.
-  bool isGathered(Value *V) const {
-    return MustGather.contains(V);
+  bool isAnyGathered(const SmallDenseSet<Value *> &Vals) const {
+    return any_of(MustGather, [&](Value *V) { return Vals.contains(V); });
   }
 
   ~BoUpSLP();
@@ -3192,7 +3196,7 @@ private:
   void scheduleBlock(BlockScheduling *BS);
 
   /// List of users to ignore during scheduling and that don't need extracting.
-  SmallPtrSet<Value *, 4> UserIgnoreList;
+  const SmallDenseSet<Value *> *UserIgnoreList = nullptr;
 
   /// A DenseMapInfo implementation for holding DenseMaps and DenseSets of
   /// sorted SmallVectors of unsigned.
@@ -3854,7 +3858,7 @@ void BoUpSLP::reorderBottomToTop(bool IgnoreReorder) {
   while (!OrderedEntries.empty()) {
     // 1. Filter out only reordered nodes.
     // 2. If the entry has multiple uses - skip it and jump to the next node.
-    MapVector<TreeEntry *, SmallVector<std::pair<unsigned, TreeEntry *>>> Users;
+    DenseMap<TreeEntry *, SmallVector<std::pair<unsigned, TreeEntry *>>> Users;
     SmallVector<TreeEntry *> Filtered;
     for (TreeEntry *TE : OrderedEntries) {
       if (!(TE->State == TreeEntry::Vectorize ||
@@ -3882,7 +3886,13 @@ void BoUpSLP::reorderBottomToTop(bool IgnoreReorder) {
     // Erase filtered entries.
     for_each(Filtered,
              [&OrderedEntries](TreeEntry *TE) { OrderedEntries.remove(TE); });
-    for (auto &Data : Users) {
+    SmallVector<
+        std::pair<TreeEntry *, SmallVector<std::pair<unsigned, TreeEntry *>>>>
+        UsersVec(Users.begin(), Users.end());
+    sort(UsersVec, [](const auto &Data1, const auto &Data2) {
+      return Data1.first->Idx > Data2.first->Idx;
+    });
+    for (auto &Data : UsersVec) {
       // Check that operands are used only in the User node.
       SmallVector<TreeEntry *> GatherOps;
       if (!canReorderOperands(Data.first, Data.second, NonVectorized,
@@ -4119,7 +4129,7 @@ void BoUpSLP::buildExternalUses(
         }
 
         // Ignore users in the user ignore list.
-        if (UserIgnoreList.contains(UserInst))
+        if (UserIgnoreList && UserIgnoreList->contains(UserInst))
           continue;
 
         LLVM_DEBUG(dbgs() << "SLP: Need to extract:" << *U << " from lane "
@@ -4276,10 +4286,16 @@ BoUpSLP::findExternalStoreUsersReorderIndices(TreeEntry *TE) const {
 }
 
 void BoUpSLP::buildTree(ArrayRef<Value *> Roots,
-                        ArrayRef<Value *> UserIgnoreLst) {
+                        const SmallDenseSet<Value *> &UserIgnoreLst) {
   deleteTree();
-  UserIgnoreList.clear();
-  UserIgnoreList.insert(UserIgnoreLst.begin(), UserIgnoreLst.end());
+  UserIgnoreList = &UserIgnoreLst;
+  if (!allSameType(Roots))
+    return;
+  buildTree_rec(Roots, 0, EdgeInfo());
+}
+
+void BoUpSLP::buildTree(ArrayRef<Value *> Roots) {
+  deleteTree();
   if (!allSameType(Roots))
     return;
   buildTree_rec(Roots, 0, EdgeInfo());
@@ -4342,8 +4358,9 @@ static LoadsState canVectorizeLoads(ArrayRef<Value *> VL, const Value *VL0,
     for (Value *V : VL)
       CommonAlignment =
           commonAlignment(CommonAlignment, cast<LoadInst>(V)->getAlign());
-    if (TTI.isLegalMaskedGather(FixedVectorType::get(ScalarTy, VL.size()),
-                                CommonAlignment))
+    auto *VecTy = FixedVectorType::get(ScalarTy, VL.size());
+    if (TTI.isLegalMaskedGather(VecTy, CommonAlignment) &&
+        !TTI.forceScalarizeMaskedGather(VecTy, CommonAlignment))
       return LoadsState::ScatterVectorize;
   }
 
@@ -4595,12 +4612,14 @@ void BoUpSLP::buildTree_rec(ArrayRef<Value *> VL, unsigned Depth,
   // the same block.
 
   // Don't vectorize ephemeral values.
-  for (Value *V : VL) {
-    if (EphValues.count(V)) {
-      LLVM_DEBUG(dbgs() << "SLP: The instruction (" << *V
-                        << ") is ephemeral.\n");
-      newTreeEntry(VL, None /*not vectorized*/, S, UserTreeIdx);
-      return;
+  if (!EphValues.empty()) {
+    for (Value *V : VL) {
+      if (EphValues.count(V)) {
+        LLVM_DEBUG(dbgs() << "SLP: The instruction (" << *V
+                          << ") is ephemeral.\n");
+        newTreeEntry(VL, None /*not vectorized*/, S, UserTreeIdx);
+        return;
+      }
     }
   }
 
@@ -4638,13 +4657,15 @@ void BoUpSLP::buildTree_rec(ArrayRef<Value *> VL, unsigned Depth,
   }
 
   // The reduction nodes (stored in UserIgnoreList) also should stay scalar.
-  for (Value *V : VL) {
-    if (UserIgnoreList.contains(V)) {
-      LLVM_DEBUG(dbgs() << "SLP: Gathering due to gathered scalar.\n");
-      if (TryToFindDuplicates(S))
-        newTreeEntry(VL, None /*not vectorized*/, S, UserTreeIdx,
-                     ReuseShuffleIndicies);
-      return;
+  if (UserIgnoreList && !UserIgnoreList->empty()) {
+    for (Value *V : VL) {
+      if (UserIgnoreList && UserIgnoreList->contains(V)) {
+        LLVM_DEBUG(dbgs() << "SLP: Gathering due to gathered scalar.\n");
+        if (TryToFindDuplicates(S))
+          newTreeEntry(VL, None /*not vectorized*/, S, UserTreeIdx,
+                       ReuseShuffleIndicies);
+        return;
+      }
     }
   }
 
@@ -6645,6 +6666,8 @@ static bool areTwoInsertFromSameBuildVector(InsertElementInst *VU,
 /// buildvector sequence.
 static bool isFirstInsertElement(const InsertElementInst *IE1,
                                  const InsertElementInst *IE2) {
+  if (IE1 == IE2)
+    return false;
   const auto *I1 = IE1;
   const auto *I2 = IE2;
   const InsertElementInst *PrevI1;
@@ -8243,7 +8266,8 @@ BoUpSLP::vectorizeTree(ExtraValueToDebugLocsMap &ExternallyUsedValues) {
     }
 
     if (auto *VU = dyn_cast<InsertElementInst>(User)) {
-      if (!Scalar->getType()->isVectorTy()) {
+      // Skip if the scalar is another vector op or Vec is not an instruction.
+      if (!Scalar->getType()->isVectorTy() && isa<Instruction>(Vec)) {
         if (auto *FTy = dyn_cast<FixedVectorType>(User->getType())) {
           Optional<unsigned> InsertIdx = getInsertIndex(VU);
           if (InsertIdx) {
@@ -8569,7 +8593,8 @@ BoUpSLP::vectorizeTree(ExtraValueToDebugLocsMap &ExternallyUsedValues) {
           LLVM_DEBUG(dbgs() << "SLP: \tvalidating user:" << *U << ".\n");
 
           // It is legal to delete users in the ignorelist.
-          assert((getTreeEntry(U) || UserIgnoreList.contains(U) ||
+          assert((getTreeEntry(U) ||
+                  (UserIgnoreList && UserIgnoreList->contains(U)) ||
                   (isa_and_nonnull<Instruction>(U) &&
                    isDeleted(cast<Instruction>(U)))) &&
                  "Deleting out-of-tree value");
@@ -10303,7 +10328,7 @@ class HorizontalReduction {
   }
 
   /// Creates reduction operation with the current opcode with the IR flags
-  /// from \p ReductionOps.
+  /// from \p ReductionOps, dropping nuw/nsw flags.
   static Value *createOp(IRBuilder<> &Builder, RecurKind RdxKind, Value *LHS,
                          Value *RHS, const Twine &Name,
                          const ReductionOpsListType &ReductionOps) {
@@ -10317,26 +10342,14 @@ class HorizontalReduction {
     Value *Op = createOp(Builder, RdxKind, LHS, RHS, Name, UseSelect);
     if (RecurrenceDescriptor::isIntMinMaxRecurrenceKind(RdxKind)) {
       if (auto *Sel = dyn_cast<SelectInst>(Op)) {
-        propagateIRFlags(Sel->getCondition(), ReductionOps[0]);
-        propagateIRFlags(Op, ReductionOps[1]);
+        propagateIRFlags(Sel->getCondition(), ReductionOps[0], nullptr,
+                         /*IncludeWrapFlags=*/false);
+        propagateIRFlags(Op, ReductionOps[1], nullptr,
+                         /*IncludeWrapFlags=*/false);
         return Op;
       }
     }
-    propagateIRFlags(Op, ReductionOps[0]);
-    return Op;
-  }
-
-  /// Creates reduction operation with the current opcode with the IR flags
-  /// from \p I.
-  static Value *createOp(IRBuilder<> &Builder, RecurKind RdxKind, Value *LHS,
-                         Value *RHS, const Twine &Name, Value *I) {
-    auto *SelI = dyn_cast<SelectInst>(I);
-    Value *Op = createOp(Builder, RdxKind, LHS, RHS, Name, SelI != nullptr);
-    if (SelI && RecurrenceDescriptor::isIntMinMaxRecurrenceKind(RdxKind)) {
-      if (auto *Sel = dyn_cast<SelectInst>(Op))
-        propagateIRFlags(Sel->getCondition(), SelI->getCondition());
-    }
-    propagateIRFlags(Op, I);
+    propagateIRFlags(Op, ReductionOps[0], nullptr, /*IncludeWrapFlags=*/false);
     return Op;
   }
 
@@ -10688,6 +10701,8 @@ public:
   /// Attempt to vectorize the tree found by matchAssociativeReduction.
   Value *tryToReduce(BoUpSLP &V, TargetTransformInfo *TTI) {
     constexpr int ReductionLimit = 4;
+    constexpr unsigned RegMaxNumber = 4;
+    constexpr unsigned RedValsMaxNumber = 128;
     // If there are a sufficient number of reduction values, reduce
     // to a nearby power-of-2. We can safely generate oversized
     // vectors and rely on the backend to split them to legal sizes.
@@ -10725,12 +10740,12 @@ public:
     // The reduction root is used as the insertion point for new instructions,
     // so set it as externally used to prevent it from being deleted.
     ExternallyUsedValues[ReductionRoot];
-    SmallVector<Value *> IgnoreList;
+    SmallDenseSet<Value *> IgnoreList;
     for (ReductionOpsType &RdxOps : ReductionOps)
       for (Value *RdxOp : RdxOps) {
         if (!RdxOp)
           continue;
-        IgnoreList.push_back(RdxOp);
+        IgnoreList.insert(RdxOp);
       }
     bool IsCmpSelMinMax = isCmpSelMinMax(cast<Instruction>(ReductionRoot));
 
@@ -10792,7 +10807,12 @@ public:
       if (NumReducedVals < ReductionLimit)
         continue;
 
-      unsigned ReduxWidth = PowerOf2Floor(NumReducedVals);
+      unsigned MaxVecRegSize = V.getMaxVecRegSize();
+      unsigned EltSize = V.getVectorElementSize(Candidates[0]);
+      unsigned MaxElts = RegMaxNumber * PowerOf2Floor(MaxVecRegSize / EltSize);
+
+      unsigned ReduxWidth = std::min<unsigned>(
+          PowerOf2Floor(NumReducedVals), std::max(RedValsMaxNumber, MaxElts));
       unsigned Start = 0;
       unsigned Pos = Start;
       // Restarts vectorization attempt with lower vector factor.
@@ -10802,10 +10822,7 @@ public:
                                   &CheckForReusedReductionOpsLocal,
                                   &PrevReduxWidth, &V,
                                   &IgnoreList](bool IgnoreVL = false) {
-        bool IsAnyRedOpGathered =
-            !IgnoreVL && any_of(IgnoreList, [&V](Value *RedOp) {
-              return V.isGathered(RedOp);
-            });
+        bool IsAnyRedOpGathered = !IgnoreVL && V.isAnyGathered(IgnoreList);
         if (!CheckForReusedReductionOpsLocal && PrevReduxWidth == ReduxWidth) {
           // Check if any of the reduction ops are gathered. If so, worth
           // trying again with less number of reduction ops.
@@ -10870,13 +10887,37 @@ public:
                        LocalExternallyUsedValues[TrackedVals[V]];
                    });
         }
-        for (unsigned Cnt = 0; Cnt < NumReducedVals; ++Cnt) {
-          if (Cnt >= Pos && Cnt < Pos + ReduxWidth)
+        // Number of uses of the candidates in the vector of values.
+        SmallDenseMap<Value *, unsigned> NumUses;
+        for (unsigned Cnt = 0; Cnt < Pos; ++Cnt) {
+          Value *V = Candidates[Cnt];
+          if (NumUses.count(V) > 0)
             continue;
-          unsigned NumOps = VectorizedVals.lookup(Candidates[Cnt]) +
-                            std::count(VL.begin(), VL.end(), Candidates[Cnt]);
-          if (NumOps != ReducedValsToOps.find(Candidates[Cnt])->second.size())
-            LocalExternallyUsedValues[Candidates[Cnt]];
+          NumUses[V] = std::count(VL.begin(), VL.end(), V);
+        }
+        for (unsigned Cnt = Pos + ReduxWidth; Cnt < NumReducedVals; ++Cnt) {
+          Value *V = Candidates[Cnt];
+          if (NumUses.count(V) > 0)
+            continue;
+          NumUses[V] = std::count(VL.begin(), VL.end(), V);
+        }
+        // Gather externally used values.
+        SmallPtrSet<Value *, 4> Visited;
+        for (unsigned Cnt = 0; Cnt < Pos; ++Cnt) {
+          Value *V = Candidates[Cnt];
+          if (!Visited.insert(V).second)
+            continue;
+          unsigned NumOps = VectorizedVals.lookup(V) + NumUses[V];
+          if (NumOps != ReducedValsToOps.find(V)->second.size())
+            LocalExternallyUsedValues[V];
+        }
+        for (unsigned Cnt = Pos + ReduxWidth; Cnt < NumReducedVals; ++Cnt) {
+          Value *V = Candidates[Cnt];
+          if (!Visited.insert(V).second)
+            continue;
+          unsigned NumOps = VectorizedVals.lookup(V) + NumUses[V];
+          if (NumOps != ReducedValsToOps.find(V)->second.size())
+            LocalExternallyUsedValues[V];
         }
         V.buildExternalUses(LocalExternallyUsedValues);
 
@@ -10979,10 +11020,6 @@ public:
             for (unsigned I = 0, E = (Sz / 2) * 2; I < E; I += 2) {
               Instruction *RedOp = InstVals[I + 1].first;
               Builder.SetCurrentDebugLocation(RedOp->getDebugLoc());
-              ReductionOpsListType Ops;
-              if (auto *Sel = dyn_cast<SelectInst>(RedOp))
-                Ops.emplace_back().push_back(Sel->getCondition());
-              Ops.emplace_back().push_back(RedOp);
               Value *RdxVal1 = InstVals[I].second;
               Value *StableRdxVal1 = RdxVal1;
               auto It1 = TrackedVals.find(RdxVal1);
@@ -10994,7 +11031,7 @@ public:
               if (It2 != TrackedVals.end())
                 StableRdxVal2 = It2->second;
               Value *ExtraRed = createOp(Builder, RdxKind, StableRdxVal1,
-                                         StableRdxVal2, "op.rdx", Ops);
+                                         StableRdxVal2, "op.rdx", ReductionOps);
               ExtraReds[I / 2] = std::make_pair(InstVals[I].first, ExtraRed);
             }
             if (Sz % 2 == 1)
@@ -11029,17 +11066,13 @@ public:
       if (ExtraReductions.size() == 1) {
         Instruction *RedOp = ExtraReductions.back().first;
         Builder.SetCurrentDebugLocation(RedOp->getDebugLoc());
-        ReductionOpsListType Ops;
-        if (auto *Sel = dyn_cast<SelectInst>(RedOp))
-          Ops.emplace_back().push_back(Sel->getCondition());
-        Ops.emplace_back().push_back(RedOp);
         Value *RdxVal = ExtraReductions.back().second;
         Value *StableRdxVal = RdxVal;
         auto It = TrackedVals.find(RdxVal);
         if (It != TrackedVals.end())
           StableRdxVal = It->second;
         VectorizedTree = createOp(Builder, RdxKind, VectorizedTree,
-                                  StableRdxVal, "op.rdx", Ops);
+                                  StableRdxVal, "op.rdx", ReductionOps);
       }
 
       ReductionRoot->replaceAllUsesWith(VectorizedTree);
