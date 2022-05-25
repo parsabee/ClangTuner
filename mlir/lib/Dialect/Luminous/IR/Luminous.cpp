@@ -121,7 +121,7 @@ ParseResult LuminousModuleOp::parse(OpAsmParser &parser,
 
   // Parse the module body.
   auto *body = result.addRegion();
-  if (parser.parseRegion(*body, None, None))
+  if (parser.parseRegion(*body, None))
     return failure();
 
   // Ensure that this module has a valid terminator
@@ -154,11 +154,8 @@ void LuminousFuncOp::build(OpBuilder &builder, OperationState &result,
 }
 
 ParseResult LuminousFuncOp::parse(OpAsmParser &parser, OperationState &result) {
-  SmallVector<OpAsmParser::UnresolvedOperand, 8> entryArgs;
-  SmallVector<NamedAttrList, 1> argAttrs;
-  SmallVector<Location> argLocations;
-  SmallVector<NamedAttrList, 1> resultAttrs;
-  SmallVector<Type, 8> argTypes;
+  SmallVector<OpAsmParser::Argument> args;
+  SmallVector<DictionaryAttr, 1> resultAttrs;
   SmallVector<Type, 4> resultTypes;
   bool isVariadic;
 
@@ -170,11 +167,11 @@ ParseResult LuminousFuncOp::parse(OpAsmParser &parser, OperationState &result) {
 
   auto signatureLocation = parser.getCurrentLocation();
   if (failed(function_interface_impl::parseFunctionSignature(
-          parser, /*allowVariadic=*/false, entryArgs, argTypes, argAttrs,
+          parser, /*allowVariadic=*/false, args,
           isVariadic, resultTypes, resultAttrs)))
     return failure();
 
-  if (entryArgs.empty() && !argTypes.empty())
+  if (args.empty())
     return parser.emitError(signatureLocation) << "requires named arguments";
 
   if (!resultAttrs.empty() || !resultTypes.empty())
@@ -183,19 +180,22 @@ ParseResult LuminousFuncOp::parse(OpAsmParser &parser, OperationState &result) {
   // Construct the function type. More types will be added to the region, but
   // not to the function type.
   Builder &builder = parser.getBuilder();
+  SmallVector<Type> argTypes;
+  for (auto &arg : args)
+    argTypes.push_back(arg.type);
   auto type = builder.getFunctionType(argTypes, resultTypes);
   result.addAttribute(LuminousFuncOp::getTypeAttrName(), TypeAttr::get(type));
 
   // Parse attributes.
   if (failed(parser.parseOptionalAttrDictWithKeyword(result.attributes)))
     return failure();
-  function_interface_impl::addArgAndResultAttrs(builder, result, argAttrs,
+  function_interface_impl::addArgAndResultAttrs(builder, result, args,
                                                 resultAttrs);
 
   // Parse the region. If no argument names were provided, take all names
   // (including those of attributions) from the entry block.
   auto *body = result.addRegion();
-  return parser.parseRegion(*body, entryArgs, argTypes);
+  return parser.parseRegion(*body, args);
 }
 
 void LuminousFuncOp::print(OpAsmPrinter &p) {
@@ -332,13 +332,16 @@ static ParseResult
 parseDispatchOpOperands(OpAsmParser &parser,
                         SmallVectorImpl<OpAsmParser::UnresolvedOperand> &argNames,
                         SmallVectorImpl<Type> &argTypes) {
-  SmallVector<NamedAttrList, 4> argAttrs;
-  SmallVector<Location, 4> argLocations;
-  bool isVariadic = false;
-  return function_interface_impl::parseFunctionArgumentList(
-      parser, /*allowAttributes=*/false,
-      /*allowVariadic=*/false, argNames, argTypes, argAttrs,
-      isVariadic);
+  SmallVector<OpAsmParser::Argument> args;
+  if (parser.parseArgumentList(args, OpAsmParser::Delimiter::Paren,
+                               /*allowType=*/true))
+    return failure();
+
+  for (auto &arg : args) {
+    argNames.push_back(arg.ssaName);
+    argTypes.push_back(arg.type);
+  }
+  return success();
 }
 
 static void printDispatchOpOperands(OpAsmPrinter &printer, Operation *,
@@ -389,10 +392,8 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
     return failure();
 
   // Now parse the body.
-  SmallVector<OpAsmParser::UnresolvedOperand, 4> regionOperands;
   std::unique_ptr<Region> region = std::make_unique<Region>();
-  SmallVector<Type, 4> regionTypes;
-  if (parser.parseRegion(*region, regionOperands, regionTypes))
+  if (parser.parseRegion(*region))
     return failure();
   result.addRegion(std::move(region));
 
