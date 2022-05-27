@@ -32,10 +32,19 @@ using namespace mlir::linalg;
 constexpr char luminousModuleSymbol[] = "device_module";
 constexpr char kernelOutliningVisited[] = "kernels_outlined";
 
-static std::string getUniqueName(const std::string &name) {
-  constexpr char luminousAsyncFnSymbol[] = "async_fn_";
-  static unsigned fnId = 0;
-  return luminousAsyncFnSymbol + name + std::to_string(fnId++);
+// finds a unique symbol for the 'name' parameter in the luminous module
+static std::string getUniqueName(LuminousModuleOp luminousModule,
+                                 const std::string &name) {
+  auto hasSymbol = [&](const std::string &sym) {
+    return luminousModule.lookupSymbol(sym) != nullptr;
+  };
+  static unsigned id = 0;
+  std::string prefix = "async_fn_" + name;
+  std::string uniqueName = prefix + std::to_string(id++);
+  while (hasSymbol(uniqueName)) {
+    uniqueName = prefix + std::to_string(id++);
+  }
+  return uniqueName;
 }
 
 namespace mlir {
@@ -65,10 +74,12 @@ struct DispatchBlockImpl {
 };
 
 struct DispatchBlocksImpl {
+  LuminousModuleOp luminousModule;
   LaunchOp launchOp;
   using Blocks = SmallVector<std::unique_ptr<DispatchBlockImpl>>;
   Blocks blocks;
-  DispatchBlocksImpl(LaunchOp op) : launchOp(op) {}
+  DispatchBlocksImpl(LuminousModuleOp module, LaunchOp op)
+      : luminousModule(module), launchOp(op) {}
 };
 
 } // namespace detail
@@ -110,7 +121,7 @@ DispatchBlock
 DispatchBlocks::addNewBlock(llvm::ArrayRef<DispatchBlock> dependencies,
                             const std::string &name) {
   impl.blocks.emplace_back(new detail::DispatchBlockImpl(
-      impl.launchOp, dependencies, getUniqueName(name)));
+      impl.launchOp, dependencies, getUniqueName(impl.luminousModule, name)));
   return DispatchBlock(*impl.blocks.back());
 }
 
@@ -136,7 +147,8 @@ static Value replaceOpsWithDispatchCall(PatternRewriter &rewriter,
   return dispatchOp;
 }
 
-/// Outlines the luminous functions and inserts dispatch calls, dependencies first
+/// Outlines the luminous functions and inserts dispatch calls, dependencies
+/// first
 static void
 outline(PatternRewriter &rewriter, Location loc,
         LuminousModuleOp luminousModule, detail::DispatchBlockImpl *impl,
@@ -291,7 +303,8 @@ LogicalResult KernelOutliningRewritePattern::matchAndRewrite(
   auto loc = op.getLoc();
   auto luminousModule = getLuminousModule(op, loc, rewriter);
   op->setAttr(kernelOutliningVisited, rewriter.getUnitAttr());
-  mlir::luminous::detail::DispatchBlocksImpl dispatchBlocksImpl(op);
+  mlir::luminous::detail::DispatchBlocksImpl dispatchBlocksImpl(luminousModule,
+                                                                op);
   DispatchBlocks dispatchBlocks(dispatchBlocksImpl);
   dispatchBuilderFn(op, dispatchBlocks);
   outlineKernels(op, rewriter, loc, luminousModule, dispatchBlocksImpl);
