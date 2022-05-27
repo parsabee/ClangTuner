@@ -135,7 +135,6 @@ Type GPUDialect::parseType(DialectAsmParser &parser) const {
   StringRef keyword;
   if (parser.parseKeyword(&keyword))
     return Type();
-
   MLIRContext *context = getContext();
 
   // Handle 'async token' types.
