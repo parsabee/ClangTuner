@@ -1,7 +1,7 @@
 // RUN: mlir-opt -convert-parallel-to-luminous-dispatch %s | FileCheck %s
 
 module  {
-  func @function() {
+  func.func @function() {
     %c1024 = constant 1024 : index
     %c64 = constant 64 : index
     %c1 = constant 1 : index
@@ -14,7 +14,7 @@ module  {
 }
 
 // CHECK:       module {
-// CHECK:         func @function() {
+// CHECK:         func.func @function() {
 // CHECK-DAG:       [[VAL_1024:%.*]] = constant 1024 : index
 // CHECK-DAG:       [[VAL_64:%.*]] = constant 64 : index
 // CHECK-DAG:       [[VAL_1:%.*]] = constant 1 : index

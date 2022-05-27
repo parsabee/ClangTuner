@@ -30,14 +30,11 @@ struct DispatchBlocksImpl;
 /// op to the basic block. cloning and handling arguments to the kernel launch
 /// is handled by the implementation
 class DispatchBlock {
+  friend struct detail::DispatchBlockImpl;
   detail::DispatchBlockImpl &impl;
 
 public:
   DispatchBlock(detail::DispatchBlockImpl &theImpl) : impl(theImpl) {}
-  DispatchBlock(DispatchBlock &&other) = default;
-  DispatchBlock(const DispatchBlock &) = delete;
-  DispatchBlock &operator=(const DispatchBlock &other) = delete;
-
   /// Clones `op' and inserts it in the basic block; it keeps track of
   /// the op for performing replacement with dispatch call.
   void pushBack(Operation *op);
@@ -52,15 +49,16 @@ class DispatchBlocks {
 
 public:
   DispatchBlocks(detail::DispatchBlocksImpl &theImpl) : impl(theImpl) {}
-  DispatchBlock addNewBlock(const std::string &name = "");
+  DispatchBlock addNewBlock(llvm::ArrayRef<DispatchBlock> dependencies = {},
+                            const std::string &name = "");
 };
 
 /// A user defined function for deciding which ops within LaunchOp needs to be
 /// dispatched
 using DispatchBuilderFn = std::function<void(LaunchOp, DispatchBlocks &)>;
+
 /// The default dispatch builder function dispatches all of the ops with a
 /// certain attribute
-// FIXME: the attribute is called "max-mem-footprint" for now
 void defaultDispatchBuilderFn(LaunchOp, DispatchBlocks &);
 
 } // namespace luminous

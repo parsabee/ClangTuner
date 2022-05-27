@@ -211,43 +211,50 @@ dispatch blocks and outlines their corresponding kernels, then removes the ops a
 kernel. Then inserts an await call on the future returned by the async dispatch call.
 
 ### Example
-
-Outlining kernels for example above
-
 ```mlir
-#map0 = affine_map<(d0, d1, d2)[s0] -> (d0 * 131072 + s0 + d1 * 1024 + d2)>
-#map1 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
-module attributes {luminous.container_module, tf.versions = {bad_consumers = [], min_consumer = 0 : i32, producer = 808 : i32}} {
+module {
+  func.func @main(%arg0: memref<1024x1024xf32>, %arg1: memref<1024xf32>, %arg2: memref<1024xf32>, %arg3: memref<f32>) {
+    %c1024 = arith.constant 1024 : index
+    %c0 = arith.constant 0 : index
+    luminous.launch shape (%c1024) step (%c1024){
+    ^bb0(%arg4: index):
+      linalg.matvec {"linalg-max-memory-footprint" = 10000 : i64} ins(%arg0, %arg1 : memref<1024x1024xf32>, memref<1024xf32>) outs(%arg2 : memref<1024xf32>)
+      linalg.matvec {"linalg-max-memory-footprint" = 10000 : i64} ins(%arg0, %arg2 : memref<1024x1024xf32>, memref<1024xf32>) outs(%arg1 : memref<1024xf32>)
+      linalg.dot {"linalg-max-memory-footprint" = 10000 : i64} ins(%arg1, %arg2 : memref<1024xf32>, memref<1024xf32>) outs(%arg3 : memref<f32>)
+      luminous.yield
+    }
+    return
+  }
+}
+```
+After outlining
+```mlir
+module attributes {luminous.container_module} {
   luminous.module @device_module{
-    luminous.func @async_fn0(%arg0: memref<1x1x512xf32, #map0>, %arg1: memref<1x1x512xf32, #map0>, %arg2: memref<1x1x512xf32, #map0>){
-      linalg.generic {indexing_maps = [#map1, #map1, #map1], iterator_types = ["parallel", "parallel", "parallel"]} ins(%arg0, %arg1 : memref<1x1x512xf32, #map0>, memref<1x1x512xf32, #map0>) outs(%arg2 : memref<1x1x512xf32, #map0>) attrs =  {"linalg-max-memory-footprint" = 10000 : i64} {
-      ^bb0(%arg3: f32, %arg4: f32, %arg5: f32):
-        %0 = arith.addf %arg3, %arg4 : f32
-        linalg.yield %0 : f32
-      }
+    luminous.func @async_fn_0(%arg0: memref<1024x1024xf32>, %arg1: memref<1024xf32>, %arg2: memref<1024xf32>){
+      linalg.matvec {"linalg-max-memory-footprint" = 10000 : i64} ins(%arg0, %arg1 : memref<1024x1024xf32>, memref<1024xf32>) outs(%arg2 : memref<1024xf32>)
+      luminous.return
+    }
+    luminous.func @async_fn_1(%arg0: memref<1024x1024xf32>, %arg1: memref<1024xf32>, %arg2: memref<1024xf32>){
+      linalg.matvec {"linalg-max-memory-footprint" = 10000 : i64} ins(%arg0, %arg1 : memref<1024x1024xf32>, memref<1024xf32>) outs(%arg2 : memref<1024xf32>)
+      luminous.return
+    }
+    luminous.func @async_fn_2(%arg0: memref<1024xf32>, %arg1: memref<1024xf32>, %arg2: memref<f32>){
+      linalg.dot {"linalg-max-memory-footprint" = 10000 : i64} ins(%arg0, %arg1 : memref<1024xf32>, memref<1024xf32>) outs(%arg2 : memref<f32>)
       luminous.return
     }
   }
-  func @main(%arg0: tensor<64x128x1024xf32>, %arg1: tensor<64x128x1024xf32>) -> tensor<64x128x1024xf32> attributes {tf.entry_function = {control_outputs = "", inputs = "args_0,args_0_1", outputs = "Identity"}} {
-    %c1 = arith.constant 1 : index
-    %c512 = arith.constant 512 : index
-    %c64 = arith.constant 64 : index
-    %c128 = arith.constant 128 : index
+  func.func @main(%arg0: memref<1024x1024xf32>, %arg1: memref<1024xf32>, %arg2: memref<1024xf32>, %arg3: memref<f32>) {
     %c1024 = arith.constant 1024 : index
-    %0 = bufferization.to_memref %arg1 : memref<64x128x1024xf32>
-    %1 = bufferization.to_memref %arg0 : memref<64x128x1024xf32>
-    %2 = memref.alloc() {alignment = 128 : i64} : memref<64x128x1024xf32>
-    luminous.launch shape (%c64, %c128, %c1024) step (%c1, %c1, %c512){
-    ^bb0(%arg2: index, %arg3: index, %arg4: index):
-      %4 = memref.subview %1[%arg2, %arg3, %arg4] [1, 1, 512] [1, 1, 1] : memref<64x128x1024xf32> to memref<1x1x512xf32, #map0>
-      %5 = memref.subview %0[%arg2, %arg3, %arg4] [1, 1, 512] [1, 1, 1] : memref<64x128x1024xf32> to memref<1x1x512xf32, #map0>
-      %6 = memref.subview %2[%arg2, %arg3, %arg4] [1, 1, 512] [1, 1, 1] : memref<64x128x1024xf32> to memref<1x1x512xf32, #map0>
-      %7 = luminous.dispatch  @device_module::@async_fn0 (%4: memref<1x1x512xf32, #map0>, %5: memref<1x1x512xf32, #map0>, %6: memref<1x1x512xf32, #map0>)
-      async.await %7 : !async.token
+    luminous.launch shape (%c1024) step (%c1024){
+    ^bb0(%arg4: index):
+      %0 = luminous.dispatch  @device_module::@async_fn_0 (%arg0: memref<1024x1024xf32>, %arg1: memref<1024xf32>, %arg2: memref<1024xf32>)
+      %1 = luminous.dispatch [%0] @device_module::@async_fn_1 (%arg0: memref<1024x1024xf32>, %arg2: memref<1024xf32>, %arg1: memref<1024xf32>)
+      %2 = luminous.dispatch [%1] @device_module::@async_fn_2 (%arg1: memref<1024xf32>, %arg2: memref<1024xf32>, %arg3: memref<f32>)
+      async.await %2 : !async.token
       luminous.yield
-    } {kerenels_outlined}
-    %3 = bufferization.to_tensor %2 : memref<64x128x1024xf32>
-    return %3 : tensor<64x128x1024xf32>
+    } {kernels_outlined}
+    return
   }
 }
 ```
@@ -273,7 +280,8 @@ public:
 class DispatchBlocks {
   ...
 public:
-  DispatchBlock addNewBlock(const std::string &name = "");
+  DispatchBlock addNewBlock(llvm::ArrayRef<DispatchBlock> dependencies = {},
+                            const std::string &name = "");
 };
 ```
 
@@ -287,15 +295,18 @@ using DispatchBuilderFn = std::function<void(LaunchOp, DispatchBlocks &)>;
 ```
 ```c++
 void defaultDispatchBuilderFn(LaunchOp launchOp,
-                              DispatchBlocks &dispatchableBlocks) {
+                              DispatchBlocks &dispatchBlocks) {
   auto &body = launchOp.body().back();
+  SmallVector<DispatchBlock> dependencies;
   for (auto &op : body) {
     if (!op.hasAttr(luminous::maxMemoryAttrName))
       continue;
 
-    // add a new block to the dispatchable blocks and fill it with ops
-    auto block = dispatchableBlocks.addNewBlock();
+    // add a new block to the dispatch blocks and fill it with ops
+    auto block = dispatchBlocks.addNewBlock(dependencies);
+    dependencies.clear();
     block.pushBack(&op);
+    dependencies.push_back(block);
   }
 }
 ```
