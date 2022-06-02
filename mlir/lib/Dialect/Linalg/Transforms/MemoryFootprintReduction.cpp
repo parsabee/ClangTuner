@@ -198,7 +198,7 @@ struct LinalgMemoryFootprintReductionPass
           LinalgMemoryFootprintReductionPass> {
   MemReduceFn reduceFn;
   LinalgMemoryFootprintReductionPass(int64_t maxFootprint, MemReduceFn fn)
-      : reduceFn(fn) {
+      : reduceFn(std::move(fn)) {
     maxMemFootprint = maxFootprint;
   }
 
@@ -230,5 +230,5 @@ struct LinalgMemoryFootprintReductionPass
 std::unique_ptr<OperationPass<func::FuncOp>>
 mlir::createLinalgMemoryFootprintReductionPass(int64_t maxFootprint,
                                                MemReduceFn fn) {
-  return std::make_unique<LinalgMemoryFootprintReductionPass>(maxFootprint, fn);
+  return std::make_unique<LinalgMemoryFootprintReductionPass>(maxFootprint, std::move(fn));
 }

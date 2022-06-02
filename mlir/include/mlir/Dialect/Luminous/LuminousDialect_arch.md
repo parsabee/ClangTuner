@@ -16,7 +16,7 @@ Simple elementwise add of two tensors
 ```mlir
 #map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 module attributes {tf.versions = {bad_consumers = [], min_consumer = 0 : i32, producer = 808 : i32}}  {
-  func @main(%arg0: tensor<64x128x1024xf32>, %arg1: tensor<64x128x1024xf32>) -> tensor<64x128x1024xf32> attributes {tf.entry_function = {control_outputs = "", inputs = "args_0,args_0_1", outputs = "Identity"}} {
+  func.func @main(%arg0: tensor<64x128x1024xf32>, %arg1: tensor<64x128x1024xf32>) -> tensor<64x128x1024xf32> attributes {tf.entry_function = {control_outputs = "", inputs = "args_0,args_0_1", outputs = "Identity"}} {
     %0 = linalg.init_tensor [64, 128, 1024] : tensor<64x128x1024xf32>
     %1 = linalg.generic {indexing_maps = [#map, #map, #map], iterator_types = ["parallel", "parallel", "parallel"]} ins(%arg0, %arg1 : tensor<64x128x1024xf32>, tensor<64x128x1024xf32>) outs(%0 : tensor<64x128x1024xf32>) {
     ^bb0(%arg2: f32, %arg3: f32, %arg4: f32):
@@ -33,7 +33,7 @@ After bufferization of linalg (`--linalg-bufferize`)
 ```mlir
 #map = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 module attributes {tf.versions = {bad_consumers = [], min_consumer = 0 : i32, producer = 808 : i32}} {
-  func @main(%arg0: tensor<64x128x1024xf32>, %arg1: tensor<64x128x1024xf32>) -> tensor<64x128x1024xf32> attributes {tf.entry_function = {control_outputs = "", inputs = "args_0,args_0_1", outputs = "Identity"}} {
+  func.func @main(%arg0: tensor<64x128x1024xf32>, %arg1: tensor<64x128x1024xf32>) -> tensor<64x128x1024xf32> attributes {tf.entry_function = {control_outputs = "", inputs = "args_0,args_0_1", outputs = "Identity"}} {
     %0 = bufferization.to_memref %arg1 : memref<64x128x1024xf32>
     %1 = bufferization.to_memref %arg0 : memref<64x128x1024xf32>
     %c64 = arith.constant 64 : index
@@ -59,7 +59,7 @@ After memory footprint reduction
 #map0 = affine_map<(d0, d1, d2)[s0] -> (d0 * 131072 + s0 + d1 * 1024 + d2)>
 #map1 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 module attributes {tf.versions = {bad_consumers = [], min_consumer = 0 : i32, producer = 808 : i32}} {
-  func @main(%arg0: tensor<64x128x1024xf32>, %arg1: tensor<64x128x1024xf32>) -> tensor<64x128x1024xf32> attributes {tf.entry_function = {control_outputs = "", inputs = "args_0,args_0_1", outputs = "Identity"}} {
+  func.func @main(%arg0: tensor<64x128x1024xf32>, %arg1: tensor<64x128x1024xf32>) -> tensor<64x128x1024xf32> attributes {tf.entry_function = {control_outputs = "", inputs = "args_0,args_0_1", outputs = "Identity"}} {
     %c1 = arith.constant 1 : index
     %c512 = arith.constant 512 : index
     %c64 = arith.constant 64 : index
@@ -145,12 +145,13 @@ It takes the linalg op (Operation *), and the shape of the op wrapped in a Linal
 footprint.
 If the user doesn't provide this function `reduceLinalgOpFootprintGreedily()` is used by default.
 
-## II. Parallel to Luminous Dispatch Pass (Subject to change)
+## II. Dialect Conversion 
+### II.a. Parallel to Luminous Launch Pass (Subject to change)
 
 ### Synopsis
 
 ```
-mlir-opt --convert-parallel-to-luminous-dispatch
+mlir-opt --convert-parallel-to-luminous-launch
 ```
 
 This is a lowering (conversion) pass from `scf` dialect to `luminous`.
@@ -166,7 +167,7 @@ Lowering the example above, (after tiling)
 #map0 = affine_map<(d0, d1, d2)[s0] -> (d0 * 131072 + s0 + d1 * 1024 + d2)>
 #map1 = affine_map<(d0, d1, d2) -> (d0, d1, d2)>
 module attributes {tf.versions = {bad_consumers = [], min_consumer = 0 : i32, producer = 808 : i32}} {
-  func @main(%arg0: tensor<64x128x1024xf32>, %arg1: tensor<64x128x1024xf32>) -> tensor<64x128x1024xf32> attributes {tf.entry_function = {control_outputs = "", inputs = "args_0,args_0_1", outputs = "Identity"}} {
+  func.func @main(%arg0: tensor<64x128x1024xf32>, %arg1: tensor<64x128x1024xf32>) -> tensor<64x128x1024xf32> attributes {tf.entry_function = {control_outputs = "", inputs = "args_0,args_0_1", outputs = "Identity"}} {
     %c1 = arith.constant 1 : index
     %c512 = arith.constant 512 : index
     %c64 = arith.constant 64 : index
@@ -196,6 +197,43 @@ module attributes {tf.versions = {bad_consumers = [], min_consumer = 0 : i32, pr
 
 There aren't any user definable functions or callbacks for this pass.
 
+### II.b. Linalg to Luminous Launch Pass (Subject to change)
+
+### Synopsis
+
+```
+mlir-opt --convert-linalg-to-luminous-launch
+```
+
+This is a conversion pass from `linalg` dialect to `luminous`.
+This pass looks for `linalg` ops with `max-memory-footprint` attribute that are not already in launch capsules, and 
+creates a `luminous.launch` capsule for them.
+
+### Example
+
+Before
+```mlir
+module {
+  func.func @test(%arg0: memref<1024x1024xf32>, %arg1: memref<1024xf32>, %arg2: memref<1024xf32>) {
+    linalg.matvec {"linalg-max-memory-footprint" = 10000 : i64} ins(%arg0, %arg1 : memref<1024x1024xf32>, memref<1024xf32>) outs(%arg2 : memref<1024xf32>)
+    return
+  }
+}
+```
+After
+```mlir
+module {
+  func.func @test(%arg0: memref<1024x1024xf32>, %arg1: memref<1024xf32>, %arg2: memref<1024xf32>) {
+    %c1024 = arith.constant 1024 : index
+    luminous.launch shape (%c1024) step (%c1024) {
+    ^bb0(%arg3: index):
+      linalg.matvec {"linalg-max-memory-footprint" = 10000 : i64} ins(%arg0, %arg1 : memref<1024x1024xf32>, memref<1024xf32>) outs(%arg2 : memref<1024xf32>)
+      luminous.yield
+    }
+    return
+  }
+}
+```
 ## III. Luminous Kernel Outlining (Subject to change)
 
 ### Synopsis

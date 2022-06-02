@@ -412,7 +412,7 @@ ParseResult LaunchOp::parse(OpAsmParser &parser, OperationState &result) {
 
 void LaunchOp::print(OpAsmPrinter &p) {
   p << " shape (" << shape() << ")"
-    << " step (" << step() << ")";
+    << " step (" << step() << ") ";
   p.printRegion(body(), /*printEntryBlockArgs=*/true);
   p.printOptionalAttrDict(
       getOperation()->getAttrs(),

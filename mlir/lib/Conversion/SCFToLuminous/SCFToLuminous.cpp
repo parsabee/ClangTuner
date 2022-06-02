@@ -13,7 +13,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Conversion/SCFToLuminous/SCFToLuminous.h"
-#include "../../../lib/Dialect/Async/Transforms/PassDetail.h" /* cloneConstantsIntoTheRegion */
 #include "../PassDetail.h"
 #include "mlir/Dialect/Async/IR/Async.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
@@ -57,7 +56,7 @@ static LogicalResult applyPatterns(ModuleOp module) {
 /// A pass converting parallel loops with luminous launch attribute
 /// to Luminous operations.
 struct SCFToLuminousPass
-    : public ConvertParallelLoopToLuminousDispatchBase<SCFToLuminousPass> {
+    : public ConvertParallelLoopToLuminousLaunchBase<SCFToLuminousPass> {
   /// Pass entry point.
   void runOnOperation() override {
     if (failed(applyPatterns(getOperation())))
@@ -93,6 +92,6 @@ LogicalResult LuminousDispatchParallelRewrite::matchAndRewrite(
 } // namespace
 
 std::unique_ptr<OperationPass<ModuleOp>>
-mlir::createConvertParallelForToLuminousDispatchPass() {
+mlir::createConvertParallelForToLuminousLaunchPass() {
   return std::make_unique<SCFToLuminousPass>();
 }

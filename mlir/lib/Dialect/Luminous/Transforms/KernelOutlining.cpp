@@ -40,10 +40,10 @@ static std::string getUniqueName(LuminousModuleOp luminousModule,
   };
   static unsigned id = 0;
   std::string prefix = "async_fn_" + name;
-  std::string uniqueName = prefix + std::to_string(id++);
-  while (hasSymbol(uniqueName)) {
+  std::string uniqueName;
+  do {
     uniqueName = prefix + std::to_string(id++);
-  }
+  } while (hasSymbol(uniqueName));
   return uniqueName;
 }
 
@@ -93,7 +93,7 @@ void DispatchBlock::pushBack(Operation *op) {
   for (auto operand : op->getOperands()) {
     // if the operands of the current op have been visited before then
     // continue, otherwise they are arguments to this block.
-    if (impl.opResults.contains(operand))
+    if (impl.opResults.contains(operand) || impl.cloningMap.contains(operand))
       continue;
 
     impl.args.push_back(operand);
@@ -266,8 +266,8 @@ namespace {
 
 struct KernelOutliningRewritePattern : public OpRewritePattern<LaunchOp> {
   DispatchBuilderFn dispatchBuilderFn;
-  KernelOutliningRewritePattern(MLIRContext *ctx, const DispatchBuilderFn &fn)
-      : OpRewritePattern<LaunchOp>(ctx), dispatchBuilderFn(fn) {}
+  KernelOutliningRewritePattern(MLIRContext *ctx, DispatchBuilderFn fn)
+      : OpRewritePattern<LaunchOp>(ctx), dispatchBuilderFn(std::move(fn)) {}
   LogicalResult matchAndRewrite(LaunchOp op,
                                 PatternRewriter &rewriter) const override;
 };
@@ -316,5 +316,5 @@ LogicalResult KernelOutliningRewritePattern::matchAndRewrite(
 
 std::unique_ptr<OperationPass<func::FuncOp>>
 mlir::createLuminousKernelOutliningPass(DispatchBuilderFn fn) {
-  return std::make_unique<LuminousKernelOutliningPass>(fn);
+  return std::make_unique<LuminousKernelOutliningPass>(std::move(fn));
 }
