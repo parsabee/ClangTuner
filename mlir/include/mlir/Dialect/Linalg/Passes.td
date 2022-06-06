@@ -24,16 +24,14 @@ def ConvertElementwiseToLinalg : Pass<"convert-elementwise-to-linalg", ""> {
   let dependentDialects = ["linalg::LinalgDialect", "memref::MemRefDialect"];
 }
 
-def LinalgInitTensorElimination : Pass<"linalg-eliminate-init-tensors"> {
-  let summary = "Try to eliminate all init_tensor ops.";
+def LinalgInitTensorToAllocTensor : Pass<"linalg-init-tensor-to-alloc-tensor"> {
+  let summary = "Replace all init_tensor ops by alloc_tensor ops.";
   let description = [{
-    This pass tries to eliminate all insert_slice op-anchored init_tensor ops.
-    I.e., when a value that is aliasing with an init_tensor op is inserted into
-    another tensor, this pass tries to rewrite the IR in such a way that the
-    destination tensor of the insert_slice op is used directly instead of the
-    init_tensor result.
+    init_tensor ops return a tensor of unspecified contents who's only purpose
+    is to carry the tensor shape. This pass converts such ops to
+    bufferization.alloc_tensor ops, which bufferize to buffer allocations.
   }];
-  let constructor = "mlir::createLinalgInitTensorEliminationPass()";
+  let constructor = "mlir::createLinalgInitTensorToAllocTensorPass()";
 }
 
 def LinalgFoldUnitExtentDims : Pass<"linalg-fold-unit-extent-dims", ""> {
@@ -140,6 +138,22 @@ def LinalgTiling : Pass<"linalg-tile", "func::FuncOp"> {
                "llvm::cl::ZeroOrMore">,
     Option<"loopType", "loop-type", "std::string", /*default=*/"\"for\"",
            "Specify the type of loops to generate: for, parallel">
+  ];
+}
+
+def LinalgMemoryFootprintReduction :
+    Pass<"linalg-memory-footprint-reduce", "func::FuncOp"> {
+  let summary = "Brings the LinalgOps memory footprint below maxMemFootprint";
+  let constructor = "mlir::createLinalgMemoryFootprintReductionPass()";
+  let options = [
+    Option<"maxMemFootprint", "linalg-max-memory-footprint", "int64_t", 
+            /*default=*/"0", "Maximum memory footprint in bytes">
+  ];
+  let dependentDialects = [
+    "AffineDialect",
+    "linalg::LinalgDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
   ];
 }
 
